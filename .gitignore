@@ -1,0 +1,33 @@
+# --- personal data: never commit ---
+# Your resume, profile, answers, credentials, database, generated resumes and
+# screenshots all live here. The repo only ships the examples in config/.
+/data/
+.env
+.env.*
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- local databases / artifacts ---
+*.db
+*.db-journal
+*.sqlite3
+/test-results/
+/playwright-report/
+
+# --- editors / OS ---
+.idea/
+.vscode/
+.DS_Store
