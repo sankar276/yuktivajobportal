@@ -1,0 +1,33 @@
+[
+  {
+    "additionalPlain": "We are an equal opportunity employer.",
+    "additional": "<div>We are an equal opportunity employer.</div>",
+    "categories": {"commitment": "Full-time", "department": "Engineering", "location": "Remote", "team": "Platform", "allLocations": ["Remote", "Austin, TX"]},
+    "createdAt": 1790770241800,
+    "descriptionPlain": "Globex is hiring a platform architect.",
+    "description": "<div>Globex is hiring a <b>platform architect</b> to lead our Kubernetes and GitOps work on AWS.</div>",
+    "id": "681fbc53-1e34-4a46-8677-3a78118674eb",
+    "lists": [{"text": "What you will do", "content": "<li>Own the platform roadmap</li><li>Mentor engineers</li>"}, {"text": "What we look for", "content": "<li>Terraform and Go</li><li>Zero trust networking</li>"}],
+    "salaryRange": {"currency": "USD", "interval": "per-year-salary", "min": 190000, "max": 240000},
+    "text": "Platform Architect",
+    "country": "US",
+    "workplaceType": "remote",
+    "hostedUrl": "https://jobs.lever.co/globex/681fbc53-1e34-4a46-8677-3a78118674eb",
+    "applyUrl": "https://jobs.lever.co/globex/681fbc53-1e34-4a46-8677-3a78118674eb/apply"
+  },
+  {
+    "additionalPlain": "",
+    "additional": "",
+    "categories": {"commitment": "Contract", "department": "Engineering", "location": "Dallas, TX", "team": "Cloud", "allLocations": ["Dallas, TX"]},
+    "createdAt": 1790683841800,
+    "descriptionPlain": "Six month contract.",
+    "description": "<div>Six month contract building AWS landing zones with Terraform and Python. Rate: $95 - $110 per hour.</div>",
+    "id": "0a1b2c3d-0000-4a46-8677-3a78118674ec",
+    "lists": [],
+    "text": "Cloud Engineer (Contract)",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/globex/0a1b2c3d-0000-4a46-8677-3a78118674ec",
+    "applyUrl": "https://jobs.lever.co/globex/0a1b2c3d-0000-4a46-8677-3a78118674ec/apply"
+  }
+]

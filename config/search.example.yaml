@@ -1,0 +1,95 @@
+# What you are looking for, and how much you let the app do on its own.
+# Copy to data/search.yaml (`jobportal init` does this) and make it yours.
+
+# A lane is one kind of role you would take. Each posting is scored against
+# every lane and keeps its best score. Two lanes are scored separately on
+# purpose: a contract is judged on rate and duration, a career role on scope.
+lanes:
+  - key: career
+    name: Career roles
+    resume: default                 # which variant in resume.yaml to tailor from
+    employment: [full_time]         # empty list = any
+    titles:
+      # Every word of a phrase must appear in the job title, in any order.
+      target:
+        - platform architect
+        - principal platform engineer
+        - principal engineer infrastructure
+        - cloud architect
+        - distinguished engineer
+        - head platform engineering
+        - director platform engineering
+      related:
+        - staff platform engineer
+        - principal cloud engineer
+        - principal site reliability engineer
+        - infrastructure architect
+        - kubernetes architect
+      exclude: [intern, sales, recruiter, marketing]
+      required: true                # skip titles that match neither list
+    skills:
+      core: [Kubernetes, AWS, Terraform, GitOps, Platform engineering, Go, Kafka, Zero trust]
+      bonus: [ArgoCD, Vault, OPA, eBPF, GCP, Azure]
+      must_have_any: []             # e.g. [Kubernetes] to skip postings without it
+      full_marks_at: 4              # core skills found for a full skills score
+    seniority: { min: staff, max: vp }
+    locations:
+      remote: true
+      remote_regions: [United States, US, USA, North America]
+      onsite: [Austin, TX]          # where you would work on-site or hybrid
+    compensation:
+      min_base: 180000              # skip postings whose advertised max is below this
+      currency: USD
+    skip_if_description_has: [security clearance]
+    weights: { title: 30, skills: 35, seniority: 10, location: 15, freshness: 10 }
+    shortlist_at: 60
+
+  - key: contract
+    name: Contracts
+    resume: contract
+    employment: [contract]
+    titles:
+      target:
+        - cloud architect
+        - platform architect
+        - kubernetes architect
+        - devops architect
+        - cloud engineer
+        - platform engineer
+      related:
+        - site reliability engineer
+        - devops engineer
+        - infrastructure engineer
+      exclude: [intern, junior]
+    skills:
+      core: [Kubernetes, AWS, Terraform, Python, CI/CD, Azure, GCP]
+      bonus: [Helm, ArgoCD, Lambda]
+    seniority: { min: senior }
+    locations:
+      remote: true
+      onsite: [Austin, Dallas, TX]
+    compensation:
+      min_hourly: 85
+    shortlist_at: 55
+
+# Never apply here: your current employer, its affiliates, anyone you must avoid.
+blocked_companies:
+  - Northwind Systems
+
+policy:
+  # review: everything waits in the queue for one click (the default).
+  # auto:   roles that clear the rules below are sent unattended; the rest wait.
+  mode: review
+  auto:
+    min_score: 80
+    daily_cap: 10                   # unattended submissions per day, all channels
+    per_company_per_week: 2
+    channels: [email, form]
+  email:
+    daily_cap: 30
+    min_seconds_between_sends: 60
+    bcc_self: true                  # keep a copy of every application you send
+  follow_up_days: 7
+  ledger_window_days: 180           # how long one vendor's submission to a client blocks another's
+  fresh_hours: 24
+  max_job_age_days: 30

@@ -1,0 +1,55 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/8172508",
+      "data_compliance": [{"type": "gdpr", "requires_consent": false, "requires_processing_consent": false, "requires_retention_consent": false, "retention_period": null, "demographic_data_consent_applies": false}],
+      "education": "education_optional",
+      "internal_job_id": 3537062,
+      "location": {"name": "Remote - US"},
+      "metadata": null,
+      "id": 8172508,
+      "updated_at": "2026-09-30T13:11:58-04:00",
+      "requisition_id": "REQ-1042",
+      "title": "Principal Platform Engineer",
+      "company_name": "Acme Robotics",
+      "first_published": "2026-09-30T09:32:53-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;About the role&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;You will own the architecture of our Kubernetes platform on AWS, delivered with Terraform and GitOps (ArgoCD).&lt;/p&gt;\n&lt;ul&gt;&lt;li&gt;Design zero trust service identity with Vault&lt;/li&gt;&lt;li&gt;Write operators in Go&lt;/li&gt;&lt;li&gt;Run Kafka at scale&lt;/li&gt;&lt;/ul&gt;\n&lt;p&gt;The base salary range for this role is $210,000 - $265,000 per year.&lt;/p&gt;",
+      "departments": [{"id": 81946, "name": "Infrastructure", "child_ids": [], "parent_id": 78876}],
+      "offices": [{"id": 87011, "name": "US Remote", "location": null, "child_ids": [], "parent_id": null}]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/8172600",
+      "internal_job_id": 3537100,
+      "location": {"name": "Dublin"},
+      "metadata": null,
+      "id": 8172600,
+      "updated_at": "2026-09-10T13:11:58-04:00",
+      "requisition_id": "REQ-0991",
+      "title": "Account Executive, EMEA",
+      "company_name": "Acme Robotics",
+      "first_published": "2026-09-03T13:32:53-04:00",
+      "language": "en",
+      "content": "&lt;p&gt;Sell robots across EMEA.&lt;/p&gt;",
+      "departments": [{"id": 81950, "name": "Sales", "child_ids": [], "parent_id": null}],
+      "offices": [{"id": 87012, "name": "Ireland", "location": null, "child_ids": [], "parent_id": null}]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/8172777",
+      "internal_job_id": 3537200,
+      "location": {"name": "Austin, TX"},
+      "metadata": null,
+      "id": 8172777,
+      "updated_at": "2026-09-29T10:00:00-04:00",
+      "requisition_id": "REQ-1050",
+      "title": "Senior Site Reliability Engineer",
+      "company_name": "Acme Robotics",
+      "first_published": "2026-09-28T10:00:00-04:00",
+      "language": "en",
+      "content": "&lt;p&gt;Keep the fleet healthy. Kubernetes, Terraform, Python, on-call.&lt;/p&gt;",
+      "departments": [{"id": 81946, "name": "Infrastructure", "child_ids": [], "parent_id": 78876}],
+      "offices": []
+    }
+  ]
+}

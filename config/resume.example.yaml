@@ -1,0 +1,121 @@
+# The evidence bank: everything true you could put on a resume.
+# Copy to data/resume.yaml (`jobportal init` does this) and replace it with yours.
+#
+# For each job the app SELECTS and ORDERS from this file. It never adds a
+# skill, number or claim that is not here, so write more than fits on a page:
+# every bullet you could defend in an interview, tagged with what it shows.
+
+# One career, several positionings. Lanes in search.yaml pick one by name.
+variants:
+  default:
+    headline: Principal Platform Engineer
+    summary: >-
+      Platform engineer with 15 years building and running Kubernetes-based
+      platforms for regulated businesses. Leads multi-region reliability,
+      GitOps delivery and zero-trust security programmes, and writes the
+      operators and tooling that make them stick.
+    emphasize: [platform, kubernetes, leadership]
+  security:
+    headline: Cloud Security Architect
+    summary: >-
+      Cloud security architect who turns policy into code: admission control,
+      workload identity and supply-chain integrity across AWS, Azure and GCP,
+      delivered through the same GitOps pipelines engineers already use.
+    emphasize: [security, policy-as-code, zero-trust]
+  contract:
+    headline: Cloud and Kubernetes Architect
+    summary: >-
+      Hands-on cloud architect available for contract engagements: Kubernetes
+      platform builds, AWS and Terraform automation, and migrations delivered
+      with clear runbooks and handover.
+    emphasize: [aws, terraform, kubernetes, migration]
+
+skills:
+  - group: Cloud and containers
+    items: [Kubernetes, EKS, GKE, AKS, AWS, Azure, GCP, Docker, Helm]
+  - group: Delivery and automation
+    items: [Terraform, GitOps, ArgoCD, CI/CD, GitHub Actions, Python, Go]
+  - group: Security
+    items: [Zero trust, OPA, Kyverno, Vault, PKI, OIDC, Sigstore, SBOM]
+  - group: Data and streaming
+    items: [Kafka, Flink, PostgreSQL, Redis]
+
+experience:
+  - company: Northwind Systems
+    title: Principal Platform Engineer
+    start: 2019-03
+    end: ""                         # empty = present
+    location: Remote
+    bullets:
+      - text: Own the architecture of a Kubernetes platform running 400 services across three regions, including on-premises clusters.
+        tags: [kubernetes, platform, architecture, multi-region]
+        pinned: true
+      - text: Migrated delivery for 120 services from a hosted pipeline tool to GitOps with ArgoCD, cutting median deploy time from 45 to 9 minutes.
+        tags: [gitops, argocd, cicd, migration]
+      - text: Designed zero-trust service identity with Vault PKI and OIDC federation, retiring 2,300 long-lived credentials.
+        tags: [security, zero-trust, vault, pki, oidc]
+      - text: Wrote three Kubernetes operators in Go that provision API gateways, identity realms and Vault configuration from Git.
+        tags: [go, kubernetes, operators, platform]
+      - text: Introduced policy-as-code guardrails with OPA Gatekeeper and Kyverno; 96% of policy violations are now blocked before merge.
+        tags: [security, policy-as-code, opa, kyverno]
+      - text: Built the Kafka and Flink streaming platform that carries end-of-day risk data, with tested regional failover.
+        tags: [kafka, flink, streaming, reliability]
+      - text: Lead a platform guild of 14 engineers across four teams; set the technical roadmap and review all cross-team designs.
+        tags: [leadership, platform]
+      - text: Cut AWS spend 22% through rightsizing, Savings Plans and a tagging standard enforced in Terraform.
+        tags: [aws, terraform, cost, finops]
+      - text: Signed and attested every production image with Sigstore and published SBOMs, meeting SLSA level 3.
+        tags: [security, supply-chain, sigstore, sbom]
+
+  - company: Contoso Financial
+    title: Senior Cloud Engineer
+    start: 2014-06
+    end: 2019-02
+    location: Austin, TX
+    bullets:
+      - text: Moved 60 applications from data centres to AWS using Terraform modules adopted by nine teams.
+        tags: [aws, terraform, migration]
+      - text: Ran the first production EKS clusters and wrote the onboarding guide used by every new service team.
+        tags: [kubernetes, eks, aws, platform]
+      - text: Built Python Lambda automation for account vending and guardrails across 80 AWS accounts.
+        tags: [python, lambda, aws, automation]
+      - text: Reduced incident volume 35% by introducing SLOs, error budgets and on-call runbooks.
+        tags: [sre, reliability, slo]
+      - text: Automated database migrations for PostgreSQL and Redis in the release pipeline.
+        tags: [postgresql, redis, cicd]
+
+  - company: Fabrikam Software
+    title: Systems Engineer
+    start: 2010-08
+    end: 2014-05
+    location: Dallas, TX
+    bullets:
+      - text: Automated server builds and patching for 1,200 Linux hosts.
+        tags: [linux, automation]
+      - text: Introduced continuous integration for the core product, taking releases from quarterly to fortnightly.
+        tags: [cicd, automation]
+
+education:
+  - school: University of Texas at Austin
+    degree: B.S. Computer Science
+    year: 2010
+
+certifications:
+  - name: AWS Certified Solutions Architect - Professional
+    issuer: Amazon Web Services
+  - name: Certified Kubernetes Administrator (CKA)
+    issuer: CNCF
+  - name: Certified Kubernetes Security Specialist (CKS)
+    issuer: CNCF
+
+extras:
+  - title: Community
+    items:
+      - Speaker, KubeCon North America 2023 - "GitOps for regulated platforms"
+      - Maintainer of an open-source Kubernetes operator for Vault configuration
+
+options:
+  recent_roles: 2                   # most recent roles get the larger bullet budget
+  max_bullets_recent: 6
+  max_bullets_older: 3
+  detail_roles: 5                   # roles beyond this are listed without bullets

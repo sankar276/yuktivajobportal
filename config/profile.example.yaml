@@ -1,0 +1,66 @@
+# Who you are, and your standard answers on application forms.
+# Copy to data/profile.yaml (`jobportal init` does this) and make it yours.
+# data/ is git-ignored: nothing in it is ever committed.
+
+name: Alex Example
+preferred_name: ""            # if you go by something other than your first name
+email: alex@example.com
+phone: "+1 512 555 0142"
+
+location:
+  city: Austin
+  region: TX
+  country: United States
+  postal_code: "78701"
+
+links:
+  linkedin: https://www.linkedin.com/in/alex-example
+  github: https://github.com/alex-example
+  website: ""
+
+current_company: Northwind Systems
+current_title: Principal Platform Engineer
+years_experience: 15
+
+# The two questions nearly every US application asks. They are never guessed:
+# leave them as `null` and any application that requires them waits for you.
+work_authorization:
+  country: United States
+  authorized: true            # legally authorized to work in the country?
+  needs_sponsorship: false    # will you now or later need visa sponsorship?
+
+# Quoted to vendors in contract emails, exactly as written here.
+contract:
+  engagements: [c2c, w2]
+  availability: 2 weeks from offer
+  rate: ""                    # empty = leave rate out of the first email
+  entity: ""                  # your company name for corp-to-corp, if any
+
+# Voluntary self-identification questions. `decline` picks the form's
+# "I don't wish to answer" option. Put an answer here only if you want it sent.
+eeo:
+  gender: decline
+  race: decline
+  veteran: decline
+  disability: decline
+
+# Standard answers for recurring questions. `match` is a phrase to look for in
+# the question (case-insensitive); the first entry that matches wins.
+# Anything a form requires that is not covered here, or by an answer you gave
+# in the app before, stops that application and asks you. Nothing is made up.
+answers:
+  - match: salary expectation
+    answer: Open, depending on scope and total compensation.
+  - match: desired salary
+    answer: Open, depending on scope and total compensation.
+  - match: notice period
+    answer: 2 weeks
+  - match: when can you start
+    answer: 2 weeks after an offer
+  - match: how did you hear
+    answer: Company careers page
+  - match: willing to relocate
+    answer: "No"
+
+# Email signature. Leave empty to use name, phone and LinkedIn.
+signature: ""

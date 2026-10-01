@@ -1,0 +1,24 @@
+{
+  "jobPostingInfo": {
+    "id": "e0c0c8b5289f100202b9a276272d0000",
+    "title": "Senior Software Architect - Data Center Systems",
+    "jobDescription": "<p><span>We are building innovative server systems for GPU accelerated applications. You will architect the Kubernetes platform that schedules them, with Go operators and Terraform.</span></p>",
+    "location": "US, CA, Santa Clara",
+    "additionalLocations": ["US, TX, Austin", "US, TX, Remote", "US, OR, Hillsboro", "US, OR, Remote", "US, CA, Remote"],
+    "postedOn": "Posted Yesterday",
+    "startDate": "2026-09-29",
+    "timeType": "Full time",
+    "jobReqId": "JR1973150",
+    "jobPostingId": "Senior-Software-Architect---Data-Center-Systems_JR1973150",
+    "jobPostingSiteId": "ExampleExternalCareerSite",
+    "country": {"descriptor": "United States of America", "id": "bc33aa3152ec42d4995f4791a106ed09"},
+    "canApply": true,
+    "posted": true,
+    "includeResumeParsing": true,
+    "externalUrl": "https://example.wd5.myworkdayjobs.com/ExampleExternalCareerSite/job/US-CA-Santa-Clara/Senior-Software-Architect---Data-Center-Systems_JR1973150",
+    "questionnaireId": "ab40a98049581037a3680ec60ea54842"
+  },
+  "hiringOrganization": {"name": "2100 EXAMPLE USA", "url": ""},
+  "similarJobs": [],
+  "userAuthenticated": false
+}

@@ -1,0 +1,21 @@
+{
+  "total": 2,
+  "jobPostings": [
+    {
+      "title": "Senior Software Architect - Data Center Systems",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-Software-Architect---Data-Center-Systems_JR1973150",
+      "locationsText": "6 Locations",
+      "postedOn": "Posted Yesterday",
+      "bulletFields": ["JR1973150"]
+    },
+    {
+      "title": "Marketing Coordinator",
+      "externalPath": "/job/US-CA-Santa-Clara/Marketing-Coordinator_JR2000001",
+      "locationsText": "US, CA, Santa Clara",
+      "postedOn": "Posted 3 Days Ago",
+      "bulletFields": ["JR2000001"]
+    }
+  ],
+  "facets": [],
+  "userAuthenticated": false
+}

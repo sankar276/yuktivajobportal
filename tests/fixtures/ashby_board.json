@@ -1,0 +1,69 @@
+{
+  "jobs": [
+    {
+      "id": "7458d4e9-da2e-47bd-98cb-adfda43d42b2",
+      "title": "Engineering Manager - EU",
+      "department": "Engineering",
+      "team": "EMEA Engineering",
+      "employmentType": "FullTime",
+      "location": "Remote - European Union",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {"location": "Spain", "address": {"postalAddress": {"addressRegion": "Spain", "addressCountry": "Spain", "addressLocality": "Spain"}}},
+        {"location": "Germany", "address": {"postalAddress": {"addressCountry": "Germany", "addressLocality": ""}}}
+      ],
+      "publishedAt": "2024-03-04T14:29:08.532+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "address": {"postalAddress": {"postalCode": "", "addressRegion": "", "addressCountry": "European Union", "addressLocality": ""}},
+      "jobUrl": "https://jobs.ashbyhq.com/initech/7458d4e9-da2e-47bd-98cb-adfda43d42b2",
+      "applyUrl": "https://jobs.ashbyhq.com/initech/7458d4e9-da2e-47bd-98cb-adfda43d42b2/application",
+      "descriptionHtml": "<p>Lead an engineering team in the EU.</p>",
+      "descriptionPlain": "Lead an engineering team in the EU.",
+      "compensation": {
+        "compensationTierSummary": "€110K – €185K • Offers Equity • Offers Bonus",
+        "scrapeableCompensationSalarySummary": "€110K - €185K",
+        "summaryComponents": [
+          {"compensationType": "Bonus", "interval": "1 YEAR", "currencyCode": "EUR", "minValue": null, "maxValue": null},
+          {"compensationType": "EquityPercentage", "interval": "NONE", "currencyCode": null, "minValue": null, "maxValue": null},
+          {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "EUR", "minValue": 110000, "maxValue": 185000}
+        ]
+      }
+    },
+    {
+      "id": "1111d4e9-da2e-47bd-98cb-adfda43d4111",
+      "title": "Staff Platform Engineer",
+      "department": "Engineering",
+      "team": "Infrastructure",
+      "employmentType": "FullTime",
+      "location": "United States",
+      "secondaryLocations": [],
+      "publishedAt": "2026-09-30T08:00:00.000+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "jobUrl": "https://jobs.ashbyhq.com/initech/1111d4e9-da2e-47bd-98cb-adfda43d4111",
+      "applyUrl": "https://jobs.ashbyhq.com/initech/1111d4e9-da2e-47bd-98cb-adfda43d4111/application",
+      "descriptionHtml": "<p>Build our internal developer platform on Kubernetes (EKS) with Terraform, ArgoCD and Go.</p><ul><li>Platform engineering for 200 engineers</li><li>Kafka and PostgreSQL operations</li></ul>",
+      "descriptionPlain": "Build our internal developer platform.",
+      "compensation": {
+        "summaryComponents": [
+          {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD", "minValue": 200000, "maxValue": 250000}
+        ]
+      }
+    },
+    {
+      "id": "2222d4e9-da2e-47bd-98cb-adfda43d4222",
+      "title": "Unlisted Role",
+      "employmentType": "FullTime",
+      "location": "Remote",
+      "publishedAt": "2026-09-30T08:00:00.000+00:00",
+      "isListed": false,
+      "isRemote": true,
+      "jobUrl": "https://jobs.ashbyhq.com/initech/2222",
+      "applyUrl": "https://jobs.ashbyhq.com/initech/2222/application",
+      "descriptionHtml": "<p>Hidden.</p>"
+    }
+  ]
+}
