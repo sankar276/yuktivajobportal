@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Tracker{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Tracker</h1>
+  <p>Every application that has gone out, by where it stands.</p>
+</div></div>
+
+{% if due %}
+<p class="flash error">{{ due | length }} application{{ "" if due | length == 1 else "s" }} past the follow-up date:
+  {% for application in due %}<a href="/applications/{{ application.id }}">{{ application.job.title }} at {{ application.job.company_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+{% endif %}
+
+{% set ns = namespace(any=false) %}
+{% for stage in stages %}
+{% set items = grouped.get(stage, []) %}
+{% if items %}
+{% set ns.any = true %}
+<section class="group" aria-labelledby="stage-{{ stage }}">
+  <header><h2 id="stage-{{ stage }}">{{ stage | status_label }}</h2><p>{{ items | length }}</p></header>
+  <div class="table-wrap">
+  <table class="grid">
+    <thead><tr>
+      <th scope="col">Role</th><th scope="col">Sent</th><th scope="col">How</th>
+      <th scope="col">Next step</th><th scope="col">Follow up</th><th scope="col"><span class="visually-hidden">Move</span></th>
+    </tr></thead>
+    <tbody>
+      {% for application in items %}
+      {% set job = application.job %}
+      <tr>
+        <td><a href="/applications/{{ application.id }}">{{ job.title }}</a><br><span class="soft">{{ job.company_name }}{% if job.client_name %} for {{ job.client_name }}{% endif %}</span></td>
+        <td>{{ application.submitted_at | day }}</td>
+        <td>{{ {"email": "Email", "form": "Form", "manual": "By you"}.get(application.channel, application.channel) }}{% if application.auto %}, unattended{% endif %}</td>
+        <td>{{ application.next_action }}</td>
+        <td>{% if application.follow_up_at %}{% if application.follow_up_at <= now %}<span class="stamp you">Due</span>{% else %}{{ application.follow_up_at | day }}{% endif %}{% endif %}</td>
+        <td>
+          <form class="inline" method="post" action="/applications/{{ application.id }}/stage">
+            <label class="visually-hidden" for="stage-{{ application.id }}">Move {{ job.title }} to</label>
+            <select id="stage-{{ application.id }}" name="stage">
+              {% for value in stages %}<option value="{{ value }}"{% if application.status == value %} selected{% endif %}>{{ value | status_label }}</option>{% endfor %}
+            </select>
+            <button type="submit">Move</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endfor %}
+
+{% if not ns.any %}
+<div class="empty">
+  <h2>Nothing has gone out yet</h2>
+  <p>Sent applications appear here with a follow-up date. Approve one in the <a href="/queue">queue</a>, or mark a role as applied from its page.</p>
+</div>
+{% endif %}
+{% endblock %}

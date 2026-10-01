@@ -188,6 +188,7 @@ def process_message(
             "duration": requirement.duration,
         },
     )
+    job.workplace = job.facts.get("workplace")
     session.add(job)
     session.flush()
     _record(session, user, mail, "requirement", job_id=job.id)

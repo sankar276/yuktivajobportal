@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Settings</h1>
+  <p>What the app is allowed to do, and what it is connected to. These are set in files, shown here as they are in effect.</p>
+</div></div>
+
+<h2>Sending</h2>
+<dl class="kv">
+  <dt>Mode</dt>
+  <dd>{% if policy.mode == "auto" %}<span class="stamp you">Unattended</span> Roles scoring {{ policy.auto.min_score | round | int }} or more are sent without asking, up to {{ policy.auto.daily_cap }} a day and {{ policy.auto.per_company_per_week }} per company a week ({{ policy.auto.channels | join(", ") }}).
+      {% else %}<span class="stamp done">Review</span> Nothing goes out until you approve it in the queue.{% endif %}</dd>
+  <dt>Never unattended</dt><dd>Forms behind a bot check or a login, a question you have not answered, a second route to a client already in the ledger, a vendor that does not name the client.</dd>
+  <dt>Email limits</dt><dd>{{ policy.email.daily_cap }} a day, at least {{ policy.email.min_seconds_between_sends }} seconds apart{% if policy.email.bcc_self %}, with a copy to you{% endif %}.</dd>
+  <dt>Follow-up</dt><dd>{{ policy.follow_up_days }} days after sending.</dd>
+  <dt>Blocked companies</dt><dd>{{ config.search.blocked_companies | join(", ") or "None" }}</dd>
+</dl>
+
+<h2>Connections</h2>
+<dl class="kv">
+  <dt>Outgoing mail</dt><dd>{% if settings.smtp_configured %}{{ settings.smtp_host }} as {{ settings.mail_from or profile.email }}{% else %}Not connected. Email applications are saved as drafts for you to send.{% endif %}</dd>
+  <dt>Incoming mail</dt><dd>{% if settings.imap_configured %}{{ settings.imap_host }}, folder {{ settings.imap_folder }} (read-only){% else %}Not connected. Recruiter requirements are added by hand.{% endif %}</dd>
+  <dt>Claude</dt><dd>{% if settings.llm_configured %}{{ settings.llm_model }}{% if settings.llm_rephrase %}, rewording resume bullets under the fact guard{% else %}, not used for rewording{% endif %}{% else %}Off. Tailoring selects and orders from your evidence bank without it.{% endif %}</dd>
+  <dt>Background worker</dt><dd>{% if worker %}Running{% if worker.last_error %}: <span class="stamp you">problem</span> {{ worker.last_error }}{% endif %}{% else %}Not running in this process.{% endif %}</dd>
+  {% if worker and worker.last_summary %}<dt>Last pass</dt><dd>{% for line in worker.last_summary %}{{ line }}<br>{% endfor %}</dd>{% endif %}
+</dl>
+
+<h2>You</h2>
+<dl class="kv">
+  <dt>Name</dt><dd>{{ profile.name }}, {{ profile.email }}</dd>
+  <dt>Location</dt><dd>{{ profile.location.display() or "Not set" }}</dd>
+  <dt>Work authorization</dt>
+  <dd>{% if profile.work_authorization.authorized is none or profile.work_authorization.needs_sponsorship is none %}<span class="stamp you">Not answered</span> Applications that ask will wait for you.{% else %}Answered for {{ profile.work_authorization.country }}.{% endif %}</dd>
+  <dt>Lanes</dt><dd>{% for lane in config.search.lanes %}{{ lane.name }} (shortlist from {{ lane.shortlist_at | round | int }}, resume '{{ lane.resume }}'){% if not loop.last %}; {% endif %}{% endfor %}</dd>
+  <dt>Resume</dt><dd>{{ config.resume.experience | length }} roles, {{ config.resume.variants | length }} variant{{ "" if config.resume.variants | length == 1 else "s" }}: {{ config.resume.variants.keys() | join(", ") }}</dd>
+</dl>
+
+<h2>Changing these</h2>
+<p>Edit the files in <code>{{ data_dir }}</code>: <code>profile.yaml</code> (you and your standard answers), <code>search.yaml</code> (lanes, blocked companies, sending rules) and <code>resume.yaml</code> (your evidence bank). Changes take effect on the next pass; a mistake in a file pauses sending and is reported here. Mail and password settings live in <code>.env</code>.</p>
+{% endblock %}

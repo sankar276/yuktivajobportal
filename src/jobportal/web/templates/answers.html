@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Answers{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Answers</h1>
+  <p>Questions application forms have asked, and what you said. A stored answer is reused whenever a form asks the same question; anything not here stops the application and asks you.</p>
+</div></div>
+
+{% if answers %}
+<div class="table-wrap">
+<table class="grid">
+  <thead><tr><th scope="col">Question</th><th scope="col">Your answer</th><th scope="col" class="num">Used</th><th scope="col"><span class="visually-hidden">Remove</span></th></tr></thead>
+  <tbody>
+    {% for row in answers %}
+    <tr>
+      <td>{{ row.question_text }}</td>
+      <td>
+        <form method="post" action="/answers/{{ row.id }}">
+          <label class="visually-hidden" for="answer-{{ row.id }}">Answer to: {{ row.question_text }}</label>
+          <textarea id="answer-{{ row.id }}" name="answer" rows="2">{{ row.answer }}</textarea>
+          <button type="submit">Save</button>
+        </form>
+      </td>
+      <td class="num">{{ row.uses }}</td>
+      <td><form class="inline" method="post" action="/answers/{{ row.id }}/delete"><button class="quiet" type="submit" aria-label="Remove the answer to: {{ row.question_text }}">Remove</button></form></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">
+  <h2>No answers stored yet</h2>
+  <p>The first time a form asks something your profile does not cover, the application waits in the queue for your answer. It is then kept here.</p>
+</div>
+{% endif %}
+
+<h2>Add an answer ahead of time</h2>
+<form method="post" action="/answers">
+  <div class="field"><label for="question">Question, as forms word it</label><input id="question" name="question" type="text" required></div>
+  <div class="field"><label for="answer">Your answer</label><textarea id="answer" name="answer" rows="3" required></textarea></div>
+  <button type="submit">Save answer</button>
+</form>
+
+{% if standard %}
+<h2>Standard answers from your profile</h2>
+<p class="soft">These match by phrase and are set in <code>profile.yaml</code>.</p>
+<div class="table-wrap">
+<table class="grid">
+  <thead><tr><th scope="col">When a question contains</th><th scope="col">Answer</th></tr></thead>
+  <tbody>{% for entry in standard %}<tr><td>{{ entry.match }}</td><td>{{ entry.answer }}</td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

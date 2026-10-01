@@ -1,0 +1,11 @@
+{% extends "bare.html" %}
+{% block title %}Configuration needs attention{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Your configuration needs attention</h1>
+  <p>Nothing is prepared or sent until this is fixed.</p>
+</div></div>
+<pre class="block">{{ problem }}</pre>
+<p>The files live in <code>{{ data_dir }}</code>. Fix the file named above and reload this page.
+If the folder is empty, run <code>jobportal init</code> to create the three files from the examples.</p>
+{% endblock %}

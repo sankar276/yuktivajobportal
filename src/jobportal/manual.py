@@ -105,6 +105,7 @@ def add_manual_job(
         facts=extract_facts(text, remote=remote, location=location),
         raw={"vendor": bool(via_vendor)},
     )
+    job.workplace = job.facts.get("workplace")
     session.add(job)
     session.flush()
     return job

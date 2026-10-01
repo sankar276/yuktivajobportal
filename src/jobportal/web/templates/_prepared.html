@@ -1,0 +1,23 @@
+{# What will be (or was) sent for one application. Expects: application, prepared #}
+{% if prepared.get("channel") == "email" %}
+<div class="letter">
+  <dl>
+    <dt>To</dt><dd>{{ prepared.get("to", "") }}</dd>
+    <dt>Subject</dt><dd>{{ prepared.get("subject", "") }}</dd>
+    <dt>Attached</dt><dd>{% for path in prepared.get("attachments", []) %}{{ path.replace("\\", "/").split("/")[-1] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+  </dl>
+  <pre>{{ prepared.get("body", "") }}</pre>
+</div>
+{% elif prepared.get("fields") %}
+<div class="table-wrap">
+<table class="grid">
+  <thead><tr><th scope="col">The form asks</th><th scope="col">Answer</th><th scope="col">From</th></tr></thead>
+  <tbody>
+    {% for item in prepared.get("fields", []) %}
+    <tr><td>{{ item.label or "(unlabelled)" }}{% if item.required %} <span class="soft small">required</span>{% endif %}</td><td>{{ item.value }}</td><td class="soft">{{ item.source }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if prepared.get("left_blank") %}<p class="soft small">Left blank (optional): {{ prepared.get("left_blank") | join(", ") }}</p>{% endif %}
+{% endif %}

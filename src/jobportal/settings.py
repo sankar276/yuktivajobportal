@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     secret_key: SecretStr | None = None
     #: Extra host names the app may be reached under (reverse proxy, LAN name).
     allowed_hosts: list[str] = Field(default_factory=list)
+    #: IANA time zone for dates shown in the app, e.g. ``America/Chicago``.
+    timezone: str = "UTC"
 
     # --- crawler -----------------------------------------------------------
     #: Sent on every request so site operators can see who is asking and why.

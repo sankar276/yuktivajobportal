@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Sources{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Sources</h1>
+    <p>The company career pages being watched. Each is read directly, about once an hour.</p>
+  </div>
+  {% if worker %}
+  <form method="post" action="/sources/check-now"><button type="submit">Read them now</button></form>
+  {% endif %}
+</div>
+
+<form method="post" action="/sources">
+  <div class="fields-2">
+    <div class="field"><label for="url">Job board or careers page address</label>
+      <input id="url" name="url" type="text" required placeholder="https://jobs.lever.co/company">
+      <p class="hint">Greenhouse, Lever, Ashby and Workday boards are supported. A company's own careers page works when it links to one of those.</p></div>
+    <div class="field"><label for="name">Company name</label><input id="name" name="name" type="text">
+      <p class="hint">Optional. Shown instead of the board's short name.</p></div>
+  </div>
+  <button class="primary" type="submit">Watch this board</button>
+</form>
+
+{% if sources %}
+<div class="table-wrap">
+<table class="grid">
+  <thead><tr>
+    <th scope="col">Company</th><th scope="col">Board</th><th scope="col" class="num">Open roles</th>
+    <th scope="col">Last read</th><th scope="col">Result</th><th scope="col"><span class="visually-hidden">Actions</span></th>
+  </tr></thead>
+  <tbody>
+    {% for source in sources %}
+    {% set adapter = adapters[source.kind] %}
+    <tr>
+      <td>{{ source.label }}</td>
+      <td>{{ adapter.display_name }}</td>
+      <td class="num">{{ source.jobs_open }}</td>
+      <td>{% if source.last_crawled_at %}{{ source.last_crawled_at | ago(now) }}{% if (source.last_crawled_at | ago(now)) != "just now" %} ago{% endif %}{% else %}Not yet{% endif %}</td>
+      <td>
+        {% if not source.enabled %}<span class="stamp off">Paused</span>
+        {% elif source.last_status in ("ok", "unchanged") %}<span class="stamp done">Read</span>
+        {% elif source.last_status == "never" %}<span class="soft">Waiting for the next pass</span>
+        {% elif source.last_status == "not_found" %}<span class="stamp you">Board not found</span><br><span class="small">Check the address; the company may have moved to another system.</span>
+        {% elif source.last_status == "robots_blocked" %}<span class="stamp you">Not allowed</span><br><span class="small">The site's robots.txt asks automated readers to stay out, so it is not read.</span>
+        {% else %}<span class="stamp you">Failed</span><br><span class="small">{{ source.last_error }}</span>{% endif %}
+      </td>
+      <td>
+        <form class="inline" method="post" action="/sources/{{ source.id }}/toggle"><button class="quiet" type="submit">{{ "Pause" if source.enabled else "Resume" }}</button></form>
+        <form class="inline" method="post" action="/sources/{{ source.id }}/delete"><button class="quiet" type="submit" aria-label="Stop watching {{ source.label }}">Remove</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">
+  <h2>No career pages yet</h2>
+  <p>Add the companies you would work for. Open a company's careers page, click any job, and paste that address above: the board it runs on is detected from it.</p>
+</div>
+{% endif %}
+{% endblock %}

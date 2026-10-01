@@ -2,7 +2,7 @@
 
 Revision ID: 0001
 Revises: -
-Create Date: 2026-09-30 22:50:04.228228
+Create Date: 2026-09-30 22:53:50.454959
 """
 
 from __future__ import annotations
@@ -81,6 +81,7 @@ def upgrade() -> None:
         sa.Column("fingerprint", sa.String(length=32), nullable=False),
         sa.Column("location", sa.String(length=500), nullable=False),
         sa.Column("remote", sa.Boolean(), nullable=True),
+        sa.Column("workplace", sa.String(length=16), nullable=True),
         sa.Column("employment_type", sa.String(length=32), nullable=True),
         sa.Column("department", sa.String(length=300), nullable=False),
         sa.Column("requisition_id", sa.String(length=120), nullable=False),
@@ -123,6 +124,7 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f("ix_jobs_fingerprint"), ["fingerprint"], unique=False)
         batch_op.create_index("ix_jobs_first_seen", ["first_seen_at"], unique=False)
         batch_op.create_index(batch_op.f("ix_jobs_source_id"), ["source_id"], unique=False)
+        batch_op.create_index(batch_op.f("ix_jobs_workplace"), ["workplace"], unique=False)
 
     op.create_table(
         "job_scores",
@@ -375,6 +377,7 @@ def downgrade() -> None:
 
     op.drop_table("job_scores")
     with op.batch_alter_table("jobs", schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f("ix_jobs_workplace"))
         batch_op.drop_index(batch_op.f("ix_jobs_source_id"))
         batch_op.drop_index("ix_jobs_first_seen")
         batch_op.drop_index(batch_op.f("ix_jobs_fingerprint"))

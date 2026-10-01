@@ -1,0 +1,44 @@
+{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed") %}
+{% set done = ("submitted", "replied", "interviewing", "offer") %}
+{% if score.hidden %}
+<li class="row is-hidden" id="job-{{ job.id }}">
+  <span>Hidden: {{ job.title }} at {{ job.company_name }}</span>
+  <form method="post" action="/jobs/{{ job.id }}/hide" hx-post="/jobs/{{ job.id }}/hide" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">
+    <button class="quiet" type="submit">Bring back</button>
+  </form>
+</li>
+{% else %}
+<li class="row{% if score.decision == 'skip' %} skip{% endif %}" id="job-{{ job.id }}">
+  <div class="score">
+    {% if score.decision == "skip" %}Skipped{% else %}{{ score.score | round | int }}<small>{{ score.lane or "" }}</small>{% endif %}
+  </div>
+  <div class="what">
+    <h3><a href="/jobs/{{ job.id }}">{{ job.title }}</a></h3>
+    <p class="where">{{ job.company_name }}{% if job.client_name %} for {{ job.client_name }}{% endif %}{% if job.location %}, {{ job.location }}{% endif %}</p>
+    <p class="why">{{ score.reasons[:2] | join(". ") }}</p>
+    {% set chips = fact_chips(job) %}
+    {% if chips %}<ul class="chips">{% for chip in chips %}<li>{{ chip }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+  <div class="meta">
+    {% if job | pay %}<span class="pay">{{ job | pay }}</span>{% endif %}
+    <span class="age">{% if job.effective_posted_at %}Posted {{ job.effective_posted_at | ago(now) }}{% if (job.effective_posted_at | ago(now)) != "just now" %} ago{% endif %}{% else %}Age unknown{% endif %}</span>
+    {% if application %}
+    <a class="stamp {% if application.status in waiting %}you{% elif application.status in done %}done{% elif application.status in ('skipped', 'rejected', 'withdrawn') %}off{% endif %}" href="/applications/{{ application.id }}">{{ application.status | status_label }}</a>
+    {% endif %}
+  </div>
+  <div class="acts">
+    {% if not application or application.status in ("skipped", "withdrawn") %}
+    <form method="post" action="/jobs/{{ job.id }}/apply" hx-post="/jobs/{{ job.id }}/apply" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">
+      <button class="primary" type="submit">Apply</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/save" hx-post="/jobs/{{ job.id }}/save" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">
+      <button type="submit" aria-pressed="{{ 'true' if score.saved else 'false' }}">{{ "Saved" if score.saved else "Save" }}</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/hide" hx-post="/jobs/{{ job.id }}/hide" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">
+      <button class="quiet" type="submit">Hide</button>
+    </form>
+  </div>
+  {% if note %}<p class="note" role="status">{{ note }}</p>{% endif %}
+</li>
+{% endif %}

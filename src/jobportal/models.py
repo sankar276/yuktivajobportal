@@ -158,6 +158,8 @@ class Job(Base):
     fingerprint: Mapped[str] = mapped_column(String(32), index=True)
     location: Mapped[str] = mapped_column(String(500), default="")
     remote: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: ``remote`` / ``hybrid`` / ``onsite`` when the posting says; a filter in the feed.
+    workplace: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     employment_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     department: Mapped[str] = mapped_column(String(300), default="")
     requisition_id: Mapped[str] = mapped_column(String(120), default="")

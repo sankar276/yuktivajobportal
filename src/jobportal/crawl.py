@@ -317,6 +317,7 @@ def _fill_detail(job: Job, raw: RawJob) -> None:
         location=job.location,
         declared_workplace=declared if isinstance(declared, str) else None,
     )
+    job.workplace = job.facts.get("workplace")
 
     if raw.comp_min is not None or raw.comp_max is not None:
         job.comp_min, job.comp_max = raw.comp_min, raw.comp_max

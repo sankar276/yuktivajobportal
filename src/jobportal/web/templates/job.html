@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} at {{ job.company_name }}{% endblock %}
+{% block content %}
+{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed") %}
+<div class="split">
+  <article>
+    <div class="page-head">
+      <div>
+        <h1>{{ job.title }}</h1>
+        <p>{{ job.company_name }}{% if job.client_name %} for {{ job.client_name }}{% endif %}{% if job.location %}, {{ job.location }}{% endif %}</p>
+      </div>
+    </div>
+    {% set chips = fact_chips(job) %}
+    {% if chips or job | pay %}
+    <ul class="chips">
+      {% if job | pay %}<li><strong>{{ job | pay }}</strong></li>{% endif %}
+      {% for chip in chips %}<li>{{ chip }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    <p class="soft small">
+      {% if job.effective_posted_at %}Posted {{ job.effective_posted_at | day }}{% else %}Already listed when this source was first read{% endif %}
+      {% if job.closed_at %}, taken down {{ job.closed_at | day }}{% endif %}
+      {% if job.requisition_id %}, requisition {{ job.requisition_id }}{% endif %}
+      {% if job.department %}, {{ job.department }}{% endif %}
+    </p>
+    {% if job.url %}<p><a href="{{ job.url }}" rel="noopener noreferrer" target="_blank">Open the original posting</a></p>{% endif %}
+    {% if job.contact_email %}<p>Contact: {{ job.contact_name or "recruiter" }}, {{ job.contact_email }}</p>{% endif %}
+    {% if job.needs_detail %}
+    <p class="flash">The description has not been fetched yet. It is read on the next pass if the title matches one of your lanes.</p>
+    {% elif job.description_text %}
+    <h2 class="visually-hidden">Description</h2>
+    <div class="description">{{ job.description_text }}</div>
+    {% else %}
+    <p class="soft">No description was given.</p>
+    {% endif %}
+  </article>
+
+  <aside class="side">
+    <section>
+      {% if score.decision == "skip" %}
+      <h2>Skipped</h2>
+      <ul class="reasons">{% for reason in score.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+      <p class="soft small">Skips come from the rules in your <code>search.yaml</code> and profile. You can still apply.</p>
+      {% else %}
+      <p class="headline-score">{{ score.score | round | int }}</p>
+      <p class="soft">{{ "On the shortlist" if score.decision == "shortlist" else "Below the shortlist" }}{% if lane %} for {{ lane.name }}{% endif %}</p>
+      <table class="factors">
+        <caption class="visually-hidden">How the score adds up</caption>
+        {% for factor in score.breakdown.get("factors", []) %}
+        <tr>
+          <th scope="row">{{ factor.note }}</th>
+          <td class="pts">{{ factor.points | round | int }}<span class="of"> of {{ factor.weight | round | int }}</span></td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% set extra = score.reasons[(score.breakdown.get("factors", []) | length):] %}
+      {% if extra %}<ul class="plain-list small">{% for reason in extra %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Application</h2>
+      {% if application and application.status not in ("skipped", "withdrawn") %}
+      <p><a class="stamp {% if application.status in waiting %}you{% elif application.status in ('submitted', 'replied', 'interviewing', 'offer') %}done{% endif %}" href="/applications/{{ application.id }}">{{ application.status | status_label }}</a></p>
+      <p><a href="/applications/{{ application.id }}">Open the application</a></p>
+      {% else %}
+      {% if application %}<p class="soft">{{ application.status | status_label }}{% if application.blockers %}: {{ application.blockers[0].detail }}{% endif %}</p>{% endif %}
+      <div class="item-acts">
+        <form method="post" action="/jobs/{{ job.id }}/apply"><button class="primary" type="submit">Apply</button></form>
+        <form method="post" action="/jobs/{{ job.id }}/applied"><button type="submit">I already applied</button></form>
+      </div>
+      <p class="soft small">Apply tailors your resume and prepares the application. It waits in the queue for your approval unless your policy sends it unattended.</p>
+      {% endif %}
+      <div class="item-acts">
+        <form method="post" action="/jobs/{{ job.id }}/save"><button type="submit">{{ "Remove from saved" if score.saved else "Save" }}</button></form>
+        <form method="post" action="/jobs/{{ job.id }}/hide"><button class="quiet" type="submit">{{ "Bring back to the feed" if score.hidden else "Hide" }}</button></form>
+      </div>
+    </section>
+
+    {% if variant %}
+    <section>
+      <h2>Tailored resume</h2>
+      <ul class="plain-list small">{% for change in variant.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+      {% if variant.gaps %}<p class="small">Asked for, and not in your evidence bank: {{ variant.gaps | join(", ") }}. Nothing was added to cover these.</p>{% endif %}
+      {% if application %}<p><a href="/applications/{{ application.id }}/resume.pdf">Download the PDF</a>, <a href="/applications/{{ application.id }}/resume.docx">Word</a></p>{% endif %}
+    </section>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

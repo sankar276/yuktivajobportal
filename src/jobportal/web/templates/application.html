@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} at {{ job.company_name }}{% endblock %}
+{% block content %}
+{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed") %}
+<div class="page-head">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p>{{ job.company_name }}{% if job.client_name %} for {{ job.client_name }}{% endif %}{% if job.location %}, {{ job.location }}{% endif %}. <a href="/jobs/{{ job.id }}">See the posting</a></p>
+  </div>
+  <span class="stamp {% if application.status in waiting %}you{% elif sent %}done{% elif application.status in ('skipped', 'withdrawn') %}off{% endif %}">{{ application.status | status_label }}</span>
+</div>
+
+<div class="split">
+  <div>
+    {% if application.blockers or application.error %}
+    <ul class="reasons">
+      {% for blocker in application.blockers %}<li>{{ blocker.detail }}</li>{% endfor %}
+      {% if application.error %}<li>{{ application.error }}</li>{% endif %}
+    </ul>
+    {% endif %}
+
+    {% if application.status in waiting %}
+    <p><a class="button primary" href="/queue#application-{{ application.id }}">Handle it in the queue</a></p>
+    {% endif %}
+
+    <h2>{{ "What was sent" if sent else "What will be sent" }}</h2>
+    {% if prepared.get("channel") == "email" or prepared.get("fields") %}
+      {% include "_prepared.html" %}
+    {% elif application.channel == "manual" %}
+      <p>This one is applied to on the company's own site.{% if job.url %} <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer">Open the posting</a>{% endif %}</p>
+    {% else %}
+      <p class="soft">Not prepared yet.</p>
+    {% endif %}
+    {% if application.confirmation %}<p><strong>Confirmation:</strong> {{ application.confirmation }}</p>{% endif %}
+    {% for shot in prepared.get("screenshots", []) %}
+      {% if loop.first %}<p class="small">Screenshots: {% endif %}<a href="/applications/{{ application.id }}/screenshot/{{ loop.index0 }}" target="_blank" rel="noopener">{{ "before submitting" if loop.first else "after submitting" }}</a>{% if not loop.last %}, {% else %}</p>{% endif %}
+    {% endfor %}
+
+    {% if variant %}
+    <h2>Resume</h2>
+    <p><a href="/applications/{{ application.id }}/resume.pdf">PDF</a>, <a href="/applications/{{ application.id }}/resume.docx">Word</a> ('{{ variant.variant }}' variant)</p>
+    <ul class="plain-list small">{% for change in variant.changes %}<li>{{ change }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    <h2>History</h2>
+    <div class="table-wrap">
+    <table class="grid">
+      <tbody>
+        {% for event in application.events | reverse %}
+        <tr>
+          <td>{{ event.at | day(true) }}</td>
+          <td>{{ event.kind | replace("_", " ") | capitalize }}</td>
+          <td class="soft small">{% for key, value in event.detail.items() %}{% if value %}{{ key | replace("_", " ") }}: {{ value if value is string else value | string }}{% if not loop.last %}; {% endif %}{% endif %}{% endfor %}</td>
+        </tr>
+        {% else %}
+        <tr><td class="soft">Nothing recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <aside class="side">
+    {% if sent or application.status == "withdrawn" %}
+    <section>
+      <h2>Where it stands</h2>
+      <form method="post" action="/applications/{{ application.id }}/stage">
+        <div class="field">
+          <label for="stage">Stage</label>
+          <select id="stage" name="stage">
+            {% for value in stages %}<option value="{{ value }}"{% if application.status == value %} selected{% endif %}>{{ value | status_label }}</option>{% endfor %}
+          </select>
+        </div>
+        <button type="submit">Update stage</button>
+      </form>
+      <dl class="kv">
+        {% if application.submitted_at %}<dt>Sent</dt><dd>{{ application.submitted_at | day(true) }}{% if application.auto %} (unattended){% endif %}</dd>{% endif %}
+        {% if application.follow_up_at %}<dt>Follow up</dt><dd>{{ application.follow_up_at | day }}</dd>{% endif %}
+      </dl>
+    </section>
+    {% endif %}
+    <section>
+      <h2>Notes</h2>
+      <form method="post" action="/applications/{{ application.id }}/notes">
+        <div class="field"><label for="next_action">Next step</label><input id="next_action" name="next_action" type="text" value="{{ application.next_action }}"></div>
+        <div class="field"><label for="notes">Notes</label><textarea id="notes" name="notes" rows="6">{{ application.notes }}</textarea></div>
+        <button type="submit">Save notes</button>
+      </form>
+    </section>
+    {% if not sent and application.status not in ("skipped", "submitting") %}
+    <section>
+      <form method="post" action="/applications/{{ application.id }}/dismiss"><button class="danger" type="submit">Do not apply</button></form>
+    </section>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

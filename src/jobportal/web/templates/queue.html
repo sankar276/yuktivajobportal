@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Queue{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Queue</h1>
+    <p>{% if mode == "auto" %}Roles that clear your unattended rules go out by themselves. Everything else waits here.{% else %}Review mode: nothing goes out until you approve it here.{% endif %}</p>
+  </div>
+</div>
+
+{% if in_flight %}
+<p class="flash">In progress: {% for application in in_flight %}<a href="/applications/{{ application.id }}">{{ application.job.title }}</a> ({{ application.status | status_label | lower }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+{% endif %}
+
+{% set ns = namespace(any=false) %}
+{% for status, heading, blurb in groups %}
+{% set items = grouped[status] %}
+{% if items %}
+{% set ns.any = true %}
+<section class="group" aria-labelledby="group-{{ status }}">
+  <header><h2 id="group-{{ status }}">{{ heading }}</h2><p>{{ blurb }}</p></header>
+  {% for application in items %}
+  {% set job = application.job %}
+  {% set prepared = application.prepared or {} %}
+  <article class="item" id="application-{{ application.id }}">
+    <div class="item-head">
+      <h3><a href="/applications/{{ application.id }}">{{ job.title }}</a> <span class="soft">at {{ job.company_name }}{% if job.client_name %} for {{ job.client_name }}{% endif %}</span></h3>
+      <span class="soft small">
+        {% if application.channel == "email" %}By email to {{ prepared.get("to") or job.contact_email }}{% elif application.channel == "form" %}Application form{% else %}On the company's site{% endif %}
+      </span>
+    </div>
+
+    {% if application.blockers or application.error %}
+    <ul class="reasons">
+      {% for blocker in application.blockers %}<li>{{ blocker.detail }}</li>{% endfor %}
+      {% if application.error %}<li>{{ application.error }}</li>{% endif %}
+    </ul>
+    {% endif %}
+
+    {% if status == "needs_answers" %}
+    <form method="post" action="/applications/{{ application.id }}/answers">
+      {% for question in prepared.get("unanswered", []) %}
+      {% set field_id = "q-%d-%d" % (application.id, loop.index) %}
+      <div class="field">
+        {% if question.type == "checkbox" and question.options | length > 1 %}
+        <fieldset>
+          <legend>{{ question.label }}</legend>
+          {% for option in question.options %}
+          <label class="check"><input type="checkbox" name="answer:{{ question.key }}" value="{{ option }}"> {{ option }}</label>
+          {% endfor %}
+        </fieldset>
+        {% else %}
+        <label for="{{ field_id }}">{{ question.label }}</label>
+        {% if question.type == "checkbox" %}
+        <select id="{{ field_id }}" name="answer:{{ question.key }}"><option value="">Choose</option><option>Yes</option><option>No</option></select>
+        {% elif question.options %}
+        <select id="{{ field_id }}" name="answer:{{ question.key }}">
+          <option value="">Choose</option>
+          {% for option in question.options %}<option>{{ option }}</option>{% endfor %}
+        </select>
+        {% elif question.type == "textarea" %}
+        <textarea id="{{ field_id }}" name="answer:{{ question.key }}" rows="4"></textarea>
+        {% else %}
+        <input id="{{ field_id }}" name="answer:{{ question.key }}" type="text">
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}
+      <div class="item-acts">
+        <button class="primary" type="submit">Save answers</button>
+      </div>
+    </form>
+
+    {% elif status == "needs_review" %}
+      {% if application.channel == "email" %}
+      <form method="post" action="/applications/{{ application.id }}/approve">
+        <div class="field"><label for="subject-{{ application.id }}">Subject</label>
+          <input id="subject-{{ application.id }}" name="subject" type="text" value="{{ prepared.get('subject', '') }}"></div>
+        <div class="field"><label for="body-{{ application.id }}">Message</label>
+          <textarea id="body-{{ application.id }}" name="body" rows="12">{{ prepared.get("body", "") }}</textarea></div>
+        <p class="small">Attached: <a href="/applications/{{ application.id }}/resume.pdf">your tailored resume</a>{% if prepared.get("attachments", []) | length > 1 %} (PDF and Word){% endif %}</p>
+        <div class="item-acts">
+          <button class="primary" type="submit">Approve and send</button>
+          <button type="submit" formaction="/applications/{{ application.id }}/draft">Save draft</button>
+        </div>
+      </form>
+      {% else %}
+      <details>
+        <summary>See exactly what will be entered ({{ prepared.get("fields", []) | length }} fields)</summary>
+        {% include "_prepared.html" %}
+      </details>
+      <p class="small"><a href="/applications/{{ application.id }}/resume.pdf">The tailored resume</a> will be uploaded.</p>
+      <div class="item-acts">
+        <form method="post" action="/applications/{{ application.id }}/approve"><button class="primary" type="submit">Approve and submit</button></form>
+      </div>
+      {% endif %}
+      {% if mode == "auto" and prepared.get("auto_notes") %}
+      <ul class="reasons">{% for note in prepared.get("auto_notes") %}<li class="info">Not sent unattended: {{ note }}</li>{% endfor %}</ul>
+      {% endif %}
+
+    {% else %}
+      <p class="small">
+        {% set link = prepared.get("url") or job.apply_url or job.url %}
+        {% if link and application.channel != "email" %}<a href="{{ link }}" target="_blank" rel="noopener noreferrer">Open the application page</a>{% endif %}
+        {% if application.resume_variant %} <a href="/applications/{{ application.id }}/resume.pdf">Download your tailored resume</a>{% endif %}
+        {% if prepared.get("draft_file") %} <a href="/applications/{{ application.id }}/draft.eml">Download the email draft</a>{% endif %}
+      </p>
+      {% if prepared.get("fields") or prepared.get("channel") == "email" %}
+      <details>
+        <summary>{% if application.channel == "email" %}The message{% else %}Your answers, ready to enter{% endif %}</summary>
+        {% include "_prepared.html" %}
+      </details>
+      {% endif %}
+      {% if application.channel == "form" and status == "needs_human" %}
+      <p class="soft small">On your own computer, <code>jobportal assist {{ application.id }}</code> opens this form in a browser with your answers filled in, for you to check and submit.</p>
+      {% endif %}
+      <div class="item-acts">
+        <form method="post" action="/applications/{{ application.id }}/mark-submitted"><button class="primary" type="submit">I sent it</button></form>
+        <form method="post" action="/applications/{{ application.id }}/retry"><button type="submit">Prepare again</button></form>
+      </div>
+    {% endif %}
+
+    <div class="item-acts">
+      <form method="post" action="/applications/{{ application.id }}/dismiss"><button class="quiet" type="submit">Do not apply</button></form>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+{% endfor %}
+
+{% if not ns.any %}
+<div class="empty">
+  <h2>Nothing is waiting on you</h2>
+  <p>Applications land here when they are ready for your approval or need something only you can give. Choose roles in the <a href="/feed">feed</a>, or let the next pass prepare the best of the shortlist.</p>
+</div>
+{% endif %}
+{% endblock %}

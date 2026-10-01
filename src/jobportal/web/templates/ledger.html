@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Ledger{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Ledger</h1>
+  <p>Who put your resume in front of which company. A second route to the same client within {{ window_days }} days is stopped for your review.</p>
+</div></div>
+
+{% if entries %}
+<div class="table-wrap">
+<table class="grid">
+  <thead><tr>
+    <th scope="col">Date</th><th scope="col">Client</th><th scope="col">Role</th><th scope="col">Through</th>
+    <th scope="col">Terms</th><th scope="col">Notes</th><th scope="col"><span class="visually-hidden">Remove</span></th>
+  </tr></thead>
+  <tbody>
+    {% for entry in entries %}
+    <tr>
+      <td>{{ entry.submitted_at | day }}</td>
+      <td>{{ entry.client_name or "Not named" }}</td>
+      <td>{% if entry.application_id %}<a href="/applications/{{ entry.application_id }}">{{ entry.role_title }}</a>{% else %}{{ entry.role_title }}{% endif %}{% if entry.requisition_id %} <span class="soft small">{{ entry.requisition_id }}</span>{% endif %}</td>
+      <td>{{ entry.vendor_name or "Directly" }}{% if entry.vendor_contact %}<br><span class="soft small">{{ entry.vendor_contact }}</span>{% endif %}</td>
+      <td>{{ [entry.engagement | replace("_", " "), entry.rate] | select | join(", ") }}</td>
+      <td class="small">{{ entry.notes }}</td>
+      <td><form class="inline" method="post" action="/ledger/{{ entry.id }}/delete"><button class="quiet" type="submit" aria-label="Remove the line for {{ entry.client_name }}">Remove</button></form></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">
+  <h2>No submissions recorded</h2>
+  <p>Every application sent from here is written to the ledger. Add the ones you made elsewhere below, so they are guarded too.</p>
+</div>
+{% endif %}
+
+<h2>Record a submission made elsewhere</h2>
+<form method="post" action="/ledger">
+  <div class="fields-2">
+    <div class="field"><label for="client_name">Client</label><input id="client_name" name="client_name" type="text" required></div>
+    <div class="field"><label for="vendor_name">Through (vendor)</label><input id="vendor_name" name="vendor_name" type="text">
+      <p class="hint">Leave empty if you applied directly.</p></div>
+  </div>
+  <div class="fields-2">
+    <div class="field"><label for="role_title">Role</label><input id="role_title" name="role_title" type="text"></div>
+    <div class="field"><label for="rate">Rate or terms</label><input id="rate" name="rate" type="text"></div>
+  </div>
+  <div class="field"><label for="notes">Notes</label><input id="notes" name="notes" type="text"></div>
+  <button type="submit">Add to ledger</button>
+</form>
+{% endblock %}

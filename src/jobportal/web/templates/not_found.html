@@ -1,0 +1,9 @@
+{% extends "bare.html" %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Nothing here</h1>
+  <p>{{ detail if detail and detail != "Not Found" else "That page does not exist, or the job or application was removed." }}</p>
+</div></div>
+<p><a href="/feed">Back to the feed</a></p>
+{% endblock %}

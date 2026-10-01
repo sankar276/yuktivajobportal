@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Feed{% endblock %}
+{% block content %}
+{% macro view_link(key, label) %}
+<a href="/feed?view={{ key }}"{% if filters.view == key %} aria-current="true"{% endif %}>{{ label }}{% if counts.get(key) is not none %}<span class="n">{{ counts[key] }}</span>{% endif %}</a>
+{% endmacro %}
+<nav class="views" aria-label="Views">
+  {{ view_link("fresh", "New in the last %d hours" % fresh_hours) }}
+  {{ view_link("shortlist", "Shortlist") }}
+  {{ view_link("saved", "Saved") }}
+  {{ view_link("all", "Everything open") }}
+  {{ view_link("hidden", "Hidden") }}
+</nav>
+
+<form class="filters" method="get" action="/feed" role="search">
+  <input type="hidden" name="view" value="{{ filters.view }}">
+  <div class="wide">
+    <label for="q">Title or company</label>
+    <input id="q" name="q" type="search" value="{{ filters.q }}">
+  </div>
+  <div>
+    <label for="lane">Lane</label>
+    <select id="lane" name="lane">
+      <option value="">Any</option>
+      {% for lane in lanes %}<option value="{{ lane.key }}"{% if filters.lane == lane.key %} selected{% endif %}>{{ lane.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="workplace">Workplace</label>
+    <select id="workplace" name="workplace">
+      <option value="">Any</option>
+      {% for key, label in workplace_labels.items() %}<option value="{{ key }}"{% if filters.workplace == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="commitment">Commitment</label>
+    <select id="commitment" name="commitment">
+      <option value="">Any</option>
+      {% for key, label in employment_labels.items() %}<option value="{{ key }}"{% if filters.commitment == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="posted">Posted within</label>
+    <select id="posted" name="posted">
+      <option value="">Any time</option>
+      {% for days, label in ((1, "24 hours"), (3, "3 days"), (7, "A week"), (30, "A month")) %}<option value="{{ days }}"{% if filters.posted == days %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="min_pay">Pay at least</label>
+    <input id="min_pay" name="min_pay" type="number" min="0" step="1" inputmode="numeric" placeholder="180000 or 90" value="{{ filters.min_pay or '' }}">
+  </div>
+  <div class="actions">
+    <div>
+      <label for="sort">Order</label>
+      <select id="sort" name="sort">
+        <option value="score"{% if filters.sort == "score" %} selected{% endif %}>Best fit</option>
+        <option value="newest"{% if filters.sort == "newest" %} selected{% endif %}>Newest</option>
+      </select>
+    </div>
+    <button type="submit">Filter</button>
+    {% if filters.narrowed %}<a href="/feed?view={{ filters.view }}">Clear</a>{% endif %}
+  </div>
+</form>
+
+{% if rows %}
+<p class="soft small">{{ total }} role{{ "" if total == 1 else "s" }}{% if pages > 1 %}, page {{ filters.page }} of {{ pages }}{% endif %}</p>
+<ul class="sheet">
+  {% for job, score, application in rows %}
+  {% include "_job_row.html" %}
+  {% endfor %}
+</ul>
+{% if pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  {% if filters.page > 1 %}<a href="/feed?{{ filters.params(page=filters.page - 1) | urlencode }}">Previous</a>{% endif %}
+  <span class="soft">Page {{ filters.page }} of {{ pages }}</span>
+  {% if filters.page < pages %}<a href="/feed?{{ filters.params(page=filters.page + 1) | urlencode }}">Next</a>{% endif %}
+</nav>
+{% endif %}
+{% else %}
+<div class="empty">
+  {% if filters.narrowed %}
+  <h2>No roles match these filters</h2>
+  <p><a href="/feed?view={{ filters.view }}">Clear the filters</a> to see everything in this view.</p>
+  {% elif counts.all == 0 %}
+  <h2>No roles yet</h2>
+  <p>Tell the app which career pages to watch under <a href="/sources">Sources</a>. Roles appear here after the first read, scored against the lanes in your <code>search.yaml</code>.</p>
+  {% elif filters.view == "fresh" %}
+  <h2>Nothing new in the last {{ fresh_hours }} hours</h2>
+  <p>The <a href="/feed?view=shortlist">shortlist</a> has every open role that fits. Watching more career pages under <a href="/sources">Sources</a> brings more new roles.</p>
+  {% elif filters.view == "saved" %}
+  <h2>Nothing saved</h2>
+  <p>Use Save on a role to keep it here.</p>
+  {% elif filters.view == "hidden" %}
+  <h2>Nothing hidden</h2>
+  <p>Roles you hide move here, where you can bring them back.</p>
+  {% else %}
+  <h2>Nothing on the shortlist</h2>
+  <p>{{ counts.all }} open role{{ "" if counts.all == 1 else "s" }} did not reach the shortlist. See <a href="/feed?view=all">everything open</a> for the reason each was scored the way it was, and adjust your lanes in <code>search.yaml</code> if the rules are too tight.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Add a role{% endblock %}
+{% block content %}
+<div class="page-head"><div>
+  <h1>Add a role</h1>
+  <p>A posting you found yourself, or a requirement a recruiter sent you. It is scored and handled like any other.</p>
+</div></div>
+{% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/jobs">
+  <div class="fields-2">
+    <div class="field"><label for="title">Job title</label><input id="title" name="title" type="text" required value="{{ values.get('title', '') }}"></div>
+    <div class="field"><label for="company">Company</label><input id="company" name="company" type="text" required value="{{ values.get('company', '') }}">
+      <p class="hint">For a recruiter's requirement, the staffing firm.</p></div>
+  </div>
+  <div class="fields-2">
+    <div class="field"><label for="location">Location</label><input id="location" name="location" type="text" placeholder="Remote - US, or Dallas, TX" value="{{ values.get('location', '') }}"></div>
+    <div class="field"><label for="employment_type">Commitment</label>
+      <select id="employment_type" name="employment_type">
+        <option value="">Not stated</option>
+        {% for key, label in employment_labels.items() %}<option value="{{ key }}"{% if values.get('employment_type') == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></div>
+  </div>
+  <div class="field"><label for="url">Link to the posting</label><input id="url" name="url" type="url" placeholder="https://" value="{{ values.get('url', '') }}">
+    <p class="hint">A Greenhouse, Lever or Ashby link lets the app read the application form.</p></div>
+  <div class="field"><label for="description">Description</label><textarea id="description" name="description" rows="10">{{ values.get('description', '') }}</textarea>
+    <p class="hint">Paste the whole posting. Pay, years asked for, travel and clearance are read from it.</p></div>
+
+  <h2>Applying by email</h2>
+  <p class="soft">Fill this in when the role is applied to by replying to a person.</p>
+  <div class="fields-2">
+    <div class="field"><label for="contact_name">Contact name</label><input id="contact_name" name="contact_name" type="text" value="{{ values.get('contact_name', '') }}"></div>
+    <div class="field"><label for="contact_email">Contact email</label><input id="contact_email" name="contact_email" type="email" value="{{ values.get('contact_email', '') }}"></div>
+  </div>
+  <div class="field">
+    <label class="check"><input type="checkbox" name="via_vendor" value="1"{% if values.get('via_vendor') %} checked{% endif %}> This came from a staffing vendor</label>
+  </div>
+  <div class="field"><label for="client_name">End client</label><input id="client_name" name="client_name" type="text" value="{{ values.get('client_name', '') }}">
+    <p class="hint">The company the vendor would submit you to. Naming it lets the ledger stop a second submission to the same client.</p></div>
+  <button class="primary" type="submit">Add role</button>
+</form>
+{% endblock %}
