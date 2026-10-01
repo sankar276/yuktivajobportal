@@ -1,0 +1,17 @@
+From: Mail Delivery Subsystem <mailer-daemon@mail.example.com>
+To: alex@example.com
+Subject: Undelivered Mail Returned to Sender
+Date: Wed, 30 Sep 2026 13:01:00 -0500
+Message-ID: <bounce-1@mail.example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+This is the mail system at host mail.example.com.
+
+Your message could not be delivered to one or more recipients.
+
+<sai.kumar@odysseytec.example>: host mx.odysseytec.example said: 550 5.1.1 User unknown
+
+----- Original message headers -----
+Message-ID: __OUR_MESSAGE_ID__
+Subject: Re: Urgent requirement: Cloud Architect (Remote) || C2C

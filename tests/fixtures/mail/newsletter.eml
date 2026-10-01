@@ -1,0 +1,10 @@
+From: Cloud Weekly <news@cloudweekly.example>
+To: alex@example.com
+Subject: This week in Kubernetes
+Date: Wed, 30 Sep 2026 07:00:00 -0500
+Message-ID: <news-1@cloudweekly.example>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+Kubernetes 1.36 is out. Read our take on the new scheduler features.
+Unsubscribe at any time.
