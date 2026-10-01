@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jobportal
+          POSTGRES_PASSWORD: jobportal
+          POSTGRES_DB: jobportal_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jobportal -d jobportal_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev,llm]"
+      - run: playwright install --with-deps chromium
+      - name: Lint
+        run: |
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+          mypy src/jobportal
+      - name: Tests (SQLite)
+        run: pytest
+      - name: Tests (Postgres)
+        run: pytest
+        env:
+          JOBPORTAL_TEST_DATABASE_URL: postgresql+psycopg://jobportal:jobportal@localhost:5432/jobportal_test
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t jobportal:ci .
+      - name: The image starts and answers
+        run: |
+          docker run -d --name app -e JOBPORTAL_PASSWORD=ci-only -p 8000:8000 jobportal:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 2; done
+          docker logs app; exit 1
