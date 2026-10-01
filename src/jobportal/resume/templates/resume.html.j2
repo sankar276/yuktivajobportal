@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ resume.name }} - Resume</title>
+<style>
+  /* Single column, real text, standard headings: what resume parsers read best. */
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  * { box-sizing: border-box; }
+  html { font-size: 10.4pt; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", "DejaVu Sans", sans-serif;
+    line-height: 1.38;
+    color: #111;
+  }
+  h1 { font-size: 21pt; line-height: 1.1; margin: 0; letter-spacing: -0.01em; }
+  .headline { font-size: 11.5pt; margin: 3pt 0 0; color: #333; }
+  .contact { margin: 5pt 0 0; font-size: 9.4pt; color: #333; }
+  .contact span + span::before { content: "  |  "; color: #888; }
+  h2 {
+    font-size: 10pt;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    margin: 13pt 0 5pt;
+    padding-bottom: 2pt;
+    border-bottom: 0.75pt solid #999;
+    break-after: avoid;
+  }
+  p { margin: 0 0 4pt; }
+  .skills { margin: 0; padding: 0; list-style: none; }
+  .skills li { margin-bottom: 2pt; }
+  .skills b { font-weight: 600; }
+  .role { margin-bottom: 8pt; }
+  .role-head { display: flex; justify-content: space-between; gap: 12pt; break-after: avoid; }
+  .role-head .title { font-weight: 600; }
+  .role-head .period { white-space: nowrap; color: #333; }
+  .role-sub { color: #333; margin-bottom: 2pt; break-after: avoid; }
+  ul.bullets { margin: 2pt 0 0; padding-left: 13pt; }
+  ul.bullets li { margin-bottom: 2pt; break-inside: avoid; }
+  ul.plain { margin: 0; padding-left: 13pt; }
+  ul.plain li { margin-bottom: 1.5pt; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ resume.name }}</h1>
+  {% if resume.headline %}<p class="headline">{{ resume.headline }}</p>{% endif %}
+  <p class="contact">{% for item in resume.contact %}<span>{{ item }}</span>{% endfor %}</p>
+</header>
+
+{% if resume.summary %}
+<section>
+  <h2>Summary</h2>
+  <p>{{ resume.summary }}</p>
+</section>
+{% endif %}
+
+{% if resume.skills %}
+<section>
+  <h2>Skills</h2>
+  <ul class="skills">
+    {% for group in resume.skills %}
+    <li><b>{{ group.group }}:</b> {{ group["items"] | join(", ") }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section>
+  <h2>Experience</h2>
+  {% for role in resume.experience %}
+  <div class="role">
+    <div class="role-head">
+      <span class="title">{{ role.title }}, {{ role.company }}</span>
+      <span class="period">{{ role.period }}</span>
+    </div>
+    {% if role.location %}<div class="role-sub">{{ role.location }}</div>{% endif %}
+    {% if role.bullets %}
+    <ul class="bullets">
+      {% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+{% if resume.education %}
+<section>
+  <h2>Education</h2>
+  <ul class="plain">
+    {% for item in resume.education %}
+    <li>{{ item.degree }}{% if item.degree %}, {% endif %}{{ item.school }}{% if item.year %} ({{ item.year }}){% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if resume.certifications %}
+<section>
+  <h2>Certifications</h2>
+  <ul class="plain">
+    {% for item in resume.certifications %}
+    <li>{{ item.name }}{% if item.issuer %}, {{ item.issuer }}{% endif %}{% if item.year %} ({{ item.year }}){% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% for section in resume.extras %}
+<section>
+  <h2>{{ section.title }}</h2>
+  <ul class="plain">
+    {% for item in section["items"] %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+</section>
+{% endfor %}
+</body>
+</html>

@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     )
     #: Any Claude API model ID; see https://platform.claude.com/docs/en/about-claude/models/overview
     llm_model: str = "claude-sonnet-5-5"
+    #: Let the model reword selected resume bullets to mirror each posting.
+    #: Every rewrite must pass the fact guard or the original text is kept.
+    llm_rephrase: bool = False
 
     # ------------------------------------------------------------------ helpers
     @property

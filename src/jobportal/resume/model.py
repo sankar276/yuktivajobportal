@@ -7,12 +7,23 @@ Nothing is ever added that is not here.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from jobportal.config import ConfigError, StrictModel, load_model
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _pretty_month(value: str) -> str:
+    """'2019-03' -> 'Mar 2019'; anything else is shown as written."""
+    match = re.fullmatch(r"(\d{4})-(\d{1,2})", value.strip())
+    if match and 1 <= int(match.group(2)) <= 12:
+        return f"{_MONTHS[int(match.group(2)) - 1]} {match.group(1)}"
+    return value
 
 
 class Bullet(StrictModel):
@@ -55,7 +66,7 @@ class Role(StrictModel):
 
     @property
     def period(self) -> str:
-        return f"{self.start} - {self.end or 'Present'}"
+        return f"{_pretty_month(self.start)} - {_pretty_month(self.end) if self.end else 'Present'}"
 
 
 class SkillGroup(StrictModel):
