@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from jobportal.config import UserConfig
-from jobportal.db import get_session_factory
+from jobportal.db import get_session_factory, utcnow
 from jobportal.manual import add_manual_job
 from jobportal.models import (
     Answer,
@@ -43,23 +43,26 @@ def app_client(settings: Settings, session: Session, user: User) -> TestClient:
 
 @pytest.fixture
 def jobs(session: Session, user: User, user_config: UserConfig) -> dict[str, Job]:
+    # The routes read the real clock, so these are stamped with it too: a fixed
+    # date here would age out of the "posted in the last N days" filters.
+    now = utcnow()
     made = {
         "principal": add_manual_job(
             session, title="Principal Platform Engineer", company="Acme Robotics",
-            description=DESCRIPTION, location="Remote - US", url="https://example.com/acme/1", now=NOW,
+            description=DESCRIPTION, location="Remote - US", url="https://example.com/acme/1", now=now,
         ),
         "contract": add_manual_job(
             session, title="Cloud Architect", company="Odyssey Staffing", client_name="Southwind Air",
             description="AWS landing zones with Terraform, Python, Kubernetes, CI/CD. Rate: $95 - $110 per hour.",
             location="Dallas, TX (Hybrid)", contact_email="sai@odyssey.example", contact_name="Sai Kumar",
-            via_vendor=True, now=NOW,
+            via_vendor=True, now=now,
         ),
         "sales": add_manual_job(
             session, title="Account Executive <script>alert(1)</script>", company="Globex",
-            description="Sell things.", location="Dublin", now=NOW,
+            description="Sell things.", location="Dublin", now=now,
         ),
     }  # fmt: skip
-    score_jobs(session, user.id, user_config.search, now=NOW, profile=user_config.profile)
+    score_jobs(session, user.id, user_config.search, now=now, profile=user_config.profile)
     session.commit()
     return made
 
