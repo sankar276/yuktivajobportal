@@ -45,6 +45,8 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
     for name in _SCRUBBED_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)  # so a developer's .env is never read
+    # No DNS from tests: unknown names simply do not resolve.
+    monkeypatch.setattr("jobportal.netguard.resolve", lambda _host: ())
     reset_settings_cache()
     reset_engine()
     yield
@@ -169,7 +171,7 @@ def browser() -> Iterator[Browser]:
 @pytest.fixture
 def form_server(settings: Settings) -> Iterator[FormServer]:
     """A local stand-in for an ATS; also lets the filler open local addresses."""
-    settings.allow_local_forms = True
+    settings.allow_local_addresses = True
     server = FormServer()
     try:
         yield server

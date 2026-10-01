@@ -56,8 +56,9 @@ class Settings(BaseSettings):
     #: Path to a Chromium/Chrome binary. Unset = the one Playwright installed.
     chromium_path: str | None = None
     headless: bool = True
-    #: Let the form filler open localhost / private addresses (tests, demos).
-    allow_local_forms: bool = False
+    #: Let the crawler and the form filler reach localhost and private
+    #: addresses. Off by default; only tests and local demos need it.
+    allow_local_addresses: bool = False
 
     # --- outgoing mail (email apply) ---------------------------------------
     smtp_host: str | None = None

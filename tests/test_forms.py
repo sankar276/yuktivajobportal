@@ -252,7 +252,7 @@ def test_form_urls_must_be_public_https(settings: Settings) -> None:
     ):
         with pytest.raises(FormUrlRefused):
             check_form_url(bad, settings)
-    settings.allow_local_forms = True
+    settings.allow_local_addresses = True
     check_form_url("http://127.0.0.1:8000/x", settings)
 
 

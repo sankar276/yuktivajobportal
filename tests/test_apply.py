@@ -937,25 +937,33 @@ def test_dismiss_and_stage_changes(session: Session, user: User, user_config: Us
     assert other.status == "skipped" and other.blockers[0]["detail"] == "Rate too low"
 
 
-def test_choose_channel(session: Session, user: User) -> None:
+def test_choose_channel(session: Session, user: User, settings: Settings) -> None:
+    def channel(source: Source, **fields) -> str:
+        fields.setdefault("title", f"Role {len(session.new) + session.query(Job).count()}")
+        return choose_channel(make_job(session, source, user=user, **fields), settings).value
+
     assert choose_channel(vendor_job(session, user)).value == "email"
     greenhouse = make_source(session, "greenhouse", "acme")
-    assert (
-        choose_channel(
-            make_job(session, greenhouse, user=user, apply_url="https://x.example/apply")
-        ).value
-        == "form"
-    )
+    lever = make_source(session, "lever", "globex")
     workday = make_source(session, "workday", "x.wd5.myworkdayjobs.com/x/Site")
+    manual = make_source(session, "manual")
+
+    good = "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=1"
+    assert channel(greenhouse, apply_url=good) == "form"
+    assert channel(lever, apply_url="https://jobs.lever.co/globex/abc/apply") == "form"
+    assert channel(greenhouse) == "manual"  # no application address at all
     assert (
-        choose_channel(
-            make_job(session, workday, user=user, title="W", apply_url="https://x.example/apply")
-        ).value
-        == "manual"
+        channel(workday, apply_url="https://x.wd5.myworkdayjobs.com/Site/job/1/apply") == "manual"
     )
-    assert (
-        choose_channel(make_job(session, greenhouse, user=user, title="No URL")).value == "manual"
-    )
+    # A board's API cannot point the browser at some other host...
+    assert channel(greenhouse, apply_url="https://evil.example/apply") == "manual"
+    assert channel(lever, apply_url="https://job-boards.greenhouse.io/x") == "manual"
+    assert channel(greenhouse, apply_url="http://127.0.0.1:8000/admin") == "manual"
+    # ...but a link you pasted yourself is yours to choose.
+    assert channel(manual, apply_url="https://careers.example.com/apply/9") == "form"
+    # Local stand-ins are accepted only when local addresses are switched on (tests, demos).
+    settings.allow_local_addresses = True
+    assert channel(greenhouse, apply_url="http://127.0.0.1:8000/form.html") == "form"
 
 
 # ------------------------------------------------------------- service: form

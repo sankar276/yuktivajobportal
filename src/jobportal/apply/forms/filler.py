@@ -18,7 +18,6 @@ site confirms it.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import re
 import time
@@ -28,13 +27,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Browser, Page
+from playwright.sync_api import Browser, Page, Request, Route
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from jobportal.apply.answers import AnswerBook
 from jobportal.apply.forms.fields import FieldKind, FormField, Resolution, to_dict
 from jobportal.http import PoliteClient
+from jobportal.netguard import UrlRefused, check_public_url, is_local_url
 from jobportal.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -125,22 +125,24 @@ class FormOutcome:
 
 def check_form_url(url: str, settings: Settings) -> None:
     """Only public https pages; local addresses only when explicitly allowed."""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise FormUrlRefused(f"not a URL: {url!r}")
-    local = host in ("localhost",) or host.endswith(".localhost")
     try:
-        address = ipaddress.ip_address(host)
-        local = local or address.is_private or address.is_loopback or address.is_link_local
-    except ValueError:
-        pass
-    if local:
-        if not settings.allow_local_forms:
-            raise FormUrlRefused(f"refusing to open a local address: {host}")
+        check_public_url(url, allow_local=settings.allow_local_addresses, require_https=True)
+    except UrlRefused as exc:
+        raise FormUrlRefused(str(exc)) from exc
+
+
+def _guard_requests(page: Page, settings: Settings) -> None:
+    """Abort anything the page tries to load from a local or private address."""
+    if settings.allow_local_addresses:
         return
-    if parts.scheme != "https":
-        raise FormUrlRefused(f"refusing to open a non-https application page: {url}")
+
+    def handler(route: Route, request: Request) -> None:
+        if is_local_url(request.url):
+            route.abort("blockedbyclient")
+        else:
+            route.continue_()
+
+    page.route("**/*", handler)
 
 
 # --------------------------------------------------------------------- scan
@@ -409,6 +411,7 @@ def prepare(
         return FormOutcome(status="needs_human", blockers=[blocked])
 
     page = browser.new_page()
+    _guard_requests(page, settings)
     try:
         _open(page, url)
         plan = build_plan(scan(page), book)
@@ -445,6 +448,7 @@ def submit(
         return FormOutcome(status="needs_human", blockers=[blocked])
 
     page = browser.new_page()
+    _guard_requests(page, settings)
     shots: list[str] = []
     try:
         _open(page, url)
@@ -526,6 +530,7 @@ def assist(
         return FormOutcome(status="needs_human", blockers=[{"kind": "url", "detail": str(exc)}])
 
     page = browser.new_page()
+    _guard_requests(page, settings)
     shots: list[str] = []
     try:
         _open(page, url)

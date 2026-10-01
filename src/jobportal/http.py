@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from jobportal.db import utcnow
+from jobportal.netguard import UrlRefused, check_public_url
 from jobportal.robots import RobotsRules
 from jobportal.settings import Settings, get_settings
 
@@ -39,6 +40,10 @@ class FetchError(Exception):
 
 class RobotsDisallowed(FetchError):
     """The host's robots.txt does not allow this path for our crawler."""
+
+
+class AddressRefused(FetchError):
+    """The URL (or a redirect from it) points at a local or private address."""
 
 
 class NotFound(FetchError):
@@ -87,6 +92,8 @@ class PoliteClient:
             timeout=self.settings.http_timeout_seconds,
             follow_redirects=True,
             transport=transport,
+            # Runs for every request, so each hop of a redirect is checked too.
+            event_hooks={"request": [self._refuse_local]},
         )
         self._sleep = sleep
         self._robots: dict[str, tuple[float, RobotsRules]] = {}
@@ -97,6 +104,9 @@ class PoliteClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def _refuse_local(self, request: httpx.Request) -> None:
+        check_public_url(str(request.url), allow_local=self.settings.allow_local_addresses)
 
     def __enter__(self) -> PoliteClient:
         return self
@@ -124,7 +134,7 @@ class PoliteClient:
         self._throttle(origin)
         try:
             response = self._client.get(url)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, UrlRefused) as exc:
             log.warning("robots.txt unreachable for %s (%s); treating as disallow", origin, exc)
             return RobotsRules.disallow_all(), ROBOTS_UNREACHABLE_TTL_SECONDS
         if 200 <= response.status_code < 300:
@@ -180,6 +190,10 @@ class PoliteClient:
         )
 
     def _request(self, method: str, url: str, **kwargs: Any) -> Response:
+        try:
+            check_public_url(url, allow_local=self.settings.allow_local_addresses)
+        except UrlRefused as exc:
+            raise AddressRefused(str(exc)) from exc
         if not self.allowed(url):
             raise RobotsDisallowed(f"robots.txt disallows {url}")
         parts = urlsplit(url)
@@ -192,6 +206,8 @@ class PoliteClient:
             self._throttle(origin)
             try:
                 response = self._client.request(method, url, **kwargs)
+            except UrlRefused as exc:  # a redirect tried to leave the public internet
+                raise AddressRefused(f"{url} redirected somewhere it must not: {exc}") from exc
             except httpx.HTTPError as exc:
                 last_error, last_status = f"{type(exc).__name__}: {exc}", None
                 delay = _backoff(attempt)

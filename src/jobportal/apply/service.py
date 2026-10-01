@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,14 +44,26 @@ from jobportal.models import (
     SourceKind,
     User,
 )
+from jobportal.netguard import is_local_host
 from jobportal.resume.service import build_resume
 from jobportal.scoring import is_blocked
 from jobportal.settings import Settings
 
 log = logging.getLogger(__name__)
 
-#: Sources whose hosted application forms the filler can read.
-FORM_SOURCES = {SourceKind.greenhouse.value, SourceKind.lever.value, SourceKind.ashby.value}
+#: The application hosts of the boards whose forms the filler can read.
+FORM_HOSTS: dict[str, frozenset[str]] = {
+    SourceKind.greenhouse.value: frozenset(
+        {
+            "job-boards.greenhouse.io",
+            "boards.greenhouse.io",
+            "job-boards.eu.greenhouse.io",
+            "boards.eu.greenhouse.io",
+        }
+    ),
+    SourceKind.lever.value: frozenset({"jobs.lever.co", "jobs.eu.lever.co"}),
+    SourceKind.ashby.value: frozenset({"jobs.ashbyhq.com"}),
+}
 #: States you can still change your mind in.
 EDITABLE = {
     AppStatus.needs_review.value,
@@ -77,13 +90,28 @@ def add_event(application: Application, kind: str, **detail: Any) -> None:
     application.events.append(ApplicationEvent(kind=kind, detail=detail, at=utcnow()))
 
 
-def choose_channel(job: Job) -> Channel:
+def form_url_trusted(job: Job, settings: Settings | None = None) -> bool:
+    """Is this application address one the browser may be sent to unattended?
+
+    A link you pasted yourself is trusted. A link that came from a job board
+    must be on that board's own application host: the board's API is third-
+    party data and must not be able to point the browser anywhere else.
+    """
+    if not job.apply_url:
+        return False
+    kind = job.source.kind
+    if kind == SourceKind.manual.value:
+        return True
+    host = (urlsplit(job.apply_url).hostname or "").lower()
+    if host in FORM_HOSTS.get(kind, frozenset()):
+        return True
+    return bool(settings and settings.allow_local_addresses and is_local_host(host))
+
+
+def choose_channel(job: Job, settings: Settings | None = None) -> Channel:
     if job.contact_email:
         return Channel.email
-    kind = job.source.kind
-    if job.apply_url and (kind in FORM_SOURCES or kind == SourceKind.manual.value):
-        return Channel.form
-    return Channel.manual
+    return Channel.form if form_url_trusted(job, settings) else Channel.manual
 
 
 def _score_of(session: Session, user_id: int, job_id: int) -> JobScore | None:
@@ -210,7 +238,7 @@ def prepare_application(
         session.add(application)
         session.flush()
 
-    application.channel = choose_channel(job).value
+    application.channel = choose_channel(job, settings).value
     application.blockers = []
     application.error = ""
     application.auto = False
