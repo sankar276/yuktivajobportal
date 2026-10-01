@@ -62,6 +62,7 @@ class Decision(StrEnum):
 
 class AppStatus(StrEnum):
     # before sending
+    preparing = "preparing"  # queued for the worker to tailor the resume and read the form
     needs_answers = "needs_answers"  # a required question has no answer yet
     needs_review = "needs_review"  # prepared; waiting for your one click
     approved = "approved"  # cleared to send (by you or by the auto policy)
@@ -188,6 +189,8 @@ class Job(Base):
     #: End client, when the vendor names one.
     client_name: Mapped[str] = mapped_column(String(200), default="")
 
+    #: Explicit facts read from the description; see :mod:`jobportal.facts`.
+    facts: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     raw: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)
 
@@ -226,6 +229,9 @@ class JobScore(Base):
     #: Hash of the rubric and job content this score was computed from.
     input_hash: Mapped[str] = mapped_column(String(64), default="")
     scored_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    #: Your own marks on the job; never touched by rescoring.
+    saved: Mapped[bool] = mapped_column(Boolean, default=False)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
 
     job: Mapped[Job] = relationship(back_populates="scores")
 

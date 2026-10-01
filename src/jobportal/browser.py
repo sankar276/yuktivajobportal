@@ -8,7 +8,7 @@ automation it is entitled to see it, and the form flow hands such pages to you.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 
 from playwright.sync_api import Browser, Error, sync_playwright
 
@@ -39,3 +39,42 @@ def launch_browser(
             yield browser
         finally:
             browser.close()
+
+
+class LazyBrowser:
+    """Starts Chromium on first use and reuses it until closed.
+
+    Playwright's sync API cannot be started twice on one thread, so a run that
+    renders resumes *and* opens forms shares a single instance through this.
+    Use it from one thread only.
+    """
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        headless: bool | None = None,
+        browser: Browser | None = None,
+    ) -> None:
+        self._settings = settings or get_settings()
+        self._headless = headless
+        self._browser = browser  # an already-running browser to borrow (never closed here)
+        self._manager: AbstractContextManager[Browser] | None = None
+
+    def get(self) -> Browser:
+        if self._browser is None:
+            self._manager = launch_browser(self._settings, headless=self._headless)
+            self._browser = self._manager.__enter__()
+        return self._browser
+
+    def close(self) -> None:
+        manager, self._manager = self._manager, None
+        if manager is not None:
+            self._browser = None
+            manager.__exit__(None, None, None)
+
+    def __enter__(self) -> LazyBrowser:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()

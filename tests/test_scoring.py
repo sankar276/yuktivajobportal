@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import pytest
@@ -43,6 +43,7 @@ class FakeJob:
     comp_period: str | None = None
     needs_detail: bool = False
     posted: datetime | None = NOW - timedelta(hours=3)
+    facts: dict = field(default_factory=dict)
 
     @property
     def effective_posted_at(self) -> datetime | None:
@@ -159,10 +160,8 @@ def test_scores_are_bounded_and_deterministic(user_config: UserConfig) -> None:
         ({"title": "Platform Architect Intern"}, "excluded 'intern'"),
         ({"location": "Remote - European Union"}, "outside your regions"),
         ({"location": "New York, NY", "remote": False}, "New York, NY"),
-        (
-            {"description_text": DESCRIPTION + " Active security clearance required."},
-            "security clearance",
-        ),
+        ({"description_text": DESCRIPTION + " Relocation required."}, "relocation required"),
+        ({"facts": {"travel_percent": 50}}, "50% travel"),
         (
             {
                 "comp_min": 120000.0,
@@ -319,3 +318,53 @@ def test_score_jobs_persists_and_skips_unchanged(
     changed.lanes[0].shortlist_at = 99
     rescored = score_jobs(session, user.id, changed, now=NOW + timedelta(hours=13))
     assert rescored.scored == 3 and rescored.shortlisted == 0
+
+
+# -------------------------------------------------------------------- facts
+
+
+def test_clearance_and_sponsorship_requirements_skip_when_you_cannot_meet_them(
+    user_config: UserConfig,
+) -> None:
+    search = user_config.search
+    profile = user_config.profile.model_copy(deep=True)
+    needs_clearance = FakeJob(facts={"clearance": "required", "clearance_level": "TS/SCI"})
+
+    result = score_job(needs_clearance, search, now=NOW, profile=profile)
+    assert result.decision is Decision.skip
+    assert result.reasons == ["Requires an active TS/SCI security clearance"]
+
+    profile.security_clearance = "TS/SCI"
+    assert (
+        score_job(needs_clearance, search, now=NOW, profile=profile).decision is Decision.shortlist
+    )
+    # "able to obtain" is not a requirement to hold one today
+    obtainable = FakeJob(facts={"clearance": "obtainable"})
+    assert (
+        score_job(obtainable, search, now=NOW, profile=user_config.profile).decision
+        is Decision.shortlist
+    )
+
+    no_sponsor = FakeJob(facts={"sponsorship": "not_offered"})
+    assert (
+        score_job(no_sponsor, search, now=NOW, profile=user_config.profile).decision
+        is Decision.shortlist
+    )
+    profile.work_authorization.needs_sponsorship = True
+    blocked = score_job(no_sponsor, search, now=NOW, profile=profile)
+    assert blocked.decision is Decision.skip
+    assert "sponsorship is not available" in blocked.reasons[0]
+
+
+def test_years_asked_beyond_your_profile_is_noted_not_skipped(user_config: UserConfig) -> None:
+    search, profile = user_config.search, user_config.profile
+    result = score_job(FakeJob(facts={"years_required": 20}), search, now=NOW, profile=profile)
+    assert result.decision is Decision.shortlist
+    assert "Asks for 20+ years; your profile says 15" in result.reasons
+    fine = score_job(FakeJob(facts={"years_required": 10}), search, now=NOW, profile=profile)
+    assert not any("Asks for" in reason for reason in fine.reasons)
+
+
+def test_travel_within_the_lane_limit_is_fine(user_config: UserConfig) -> None:
+    job = FakeJob(facts={"travel_percent": 25})
+    assert score_job(job, user_config.search, now=NOW).decision is Decision.shortlist

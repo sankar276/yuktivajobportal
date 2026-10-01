@@ -40,7 +40,8 @@ lanes:
     compensation:
       min_base: 180000              # skip postings whose advertised max is below this
       currency: USD
-    skip_if_description_has: [security clearance]
+    skip_if_description_has: [relocation required]
+    max_travel_percent: 30          # skip postings that state more travel than this
     weights: { title: 30, skills: 35, seniority: 10, location: 15, freshness: 10 }
     shortlist_at: 60
 

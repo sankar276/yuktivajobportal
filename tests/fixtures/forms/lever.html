@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Globex - Platform Architect</title>
+<style>.application-question{margin:12px 0}.application-label{font-weight:bold}</style></head>
+<body>
+<h2>Platform Architect</h2>
+<form id="application-form" action="/submit" method="POST" enctype="multipart/form-data">
+  <ul>
+    <li class="application-question resume"><label><div class="application-label">Resume/CV <span class="required">✱</span></div>
+      <div class="application-field"><input id="resume-upload-input" type="file" name="resume"></div></label></li>
+    <li class="application-question"><label><div class="application-label">Full name<span class="required">✱</span></div>
+      <div class="application-field"><input type="text" name="name" required></div></label></li>
+    <li class="application-question"><label><div class="application-label">Email<span class="required">✱</span></div>
+      <div class="application-field"><input type="email" name="email" required></div></label></li>
+    <li class="application-question"><label><div class="application-label">Phone</div>
+      <div class="application-field"><input type="text" name="phone"></div></label></li>
+    <li class="application-question"><label><div class="application-label">Current company</div>
+      <div class="application-field"><input type="text" name="org"></div></label></li>
+    <li class="application-question"><label><div class="application-label">LinkedIn URL</div>
+      <div class="application-field"><input type="text" name="urls[LinkedIn]"></div></label></li>
+    <li class="application-question"><label><div class="application-label">GitHub URL</div>
+      <div class="application-field"><input type="text" name="urls[GitHub]"></div></label></li>
+  </ul>
+  <h4>Additional questions</h4>
+  <ul>
+    <li class="application-question custom-question">
+      <div class="application-label">Are you open to working Central Time hours?<span class="required">✱</span></div>
+      <div class="application-field">
+        <ul data-qa="multiple-choice">
+          <li><label><input type="radio" name="cards[11][field0]" value="Yes" required><span class="application-answer-alternative">Yes</span></label></li>
+          <li><label><input type="radio" name="cards[11][field0]" value="No"><span class="application-answer-alternative">No</span></label></li>
+        </ul>
+      </div></li>
+    <li class="application-question custom-question">
+      <div class="application-label">Which clouds have you run production workloads on?</div>
+      <div class="application-field">
+        <ul>
+          <li><label><input type="checkbox" name="cards[11][field1]" value="AWS"><span>AWS</span></label></li>
+          <li><label><input type="checkbox" name="cards[11][field1]" value="Azure"><span>Azure</span></label></li>
+          <li><label><input type="checkbox" name="cards[11][field1]" value="GCP"><span>GCP</span></label></li>
+        </ul>
+      </div></li>
+  </ul>
+  <ul>
+    <li class="application-question"><label><div class="application-label">Additional information</div>
+      <div class="application-field"><textarea name="comments"></textarea></div></label></li>
+  </ul>
+  <button id="btn-submit" type="submit" class="postings-btn template-btn-submit">Submit application</button>
+</form>
+</body></html>

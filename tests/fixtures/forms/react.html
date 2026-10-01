@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply - Staff Platform Engineer - Initech</title>
+<style>
+  .sr{position:absolute;opacity:0;width:0;height:0}
+  .pill{display:inline-block;border:1px solid #888;padding:4px 10px;margin-right:6px;cursor:pointer}
+  input:checked + .pill{background:#234;color:#fff}
+  [role=listbox]{border:1px solid #888;max-width:240px}
+  [role=option]{padding:4px 8px;cursor:pointer}
+  .error{color:#b00}
+</style></head>
+<body>
+<div id="root"><p>Loading application…</p></div>
+<script>
+  // The form is rendered after load, and submitted with fetch: no <form> tag,
+  // no page navigation. Typical of single-page application forms.
+  setTimeout(() => {
+    document.getElementById("root").innerHTML = `
+      <h1>Staff Platform Engineer</h1>
+      <div><span id="l-name">Name</span><input aria-labelledby="l-name" name="_systemfield_name" aria-required="true"></div>
+      <div><span id="l-email">Email</span><input aria-labelledby="l-email" name="_systemfield_email" type="email" aria-required="true"></div>
+      <div><span id="l-resume">Resume</span><input type="file" class="sr" aria-labelledby="l-resume" name="_systemfield_resume" aria-required="true"></div>
+      <div role="radiogroup" aria-labelledby="l-auth">
+        <span id="l-auth">Are you authorized to work in the United States?</span>
+        <label><input type="radio" class="sr" name="auth" value="yes"><span class="pill">Yes</span></label>
+        <label><input type="radio" class="sr" name="auth" value="no"><span class="pill">No</span></label>
+      </div>
+      <div><span id="l-loc">Location (City)</span>
+        <input role="combobox" aria-labelledby="l-loc" aria-required="true" id="loc" autocomplete="off">
+        <div role="listbox" id="loc-list" hidden></div></div>
+      <div><span id="l-years">Years of experience</span><input aria-labelledby="l-years" name="years" type="number"></div>
+      <p class="error" id="errors" hidden></p>
+      <button type="button" id="go">Submit application</button>`;
+    const cities = ["Austin, TX", "Boston, MA", "Dallas, TX"];
+    const input = document.getElementById("loc");
+    const list = document.getElementById("loc-list");
+    let chosen = "";
+    input.addEventListener("input", () => {
+      const q = input.value.toLowerCase();
+      list.innerHTML = "";
+      cities.filter((c) => c.toLowerCase().includes(q)).forEach((c) => {
+        const o = document.createElement("div");
+        o.setAttribute("role", "option"); o.textContent = c;
+        o.addEventListener("click", () => { chosen = c; input.value = c; list.hidden = true; });
+        list.appendChild(o);
+      });
+      list.hidden = false; chosen = "";
+    });
+    document.getElementById("go").addEventListener("click", async () => {
+      const value = (n) => (document.querySelector(`[name="${n}"]`) || {}).value || "";
+      const auth = (document.querySelector('[name="auth"]:checked') || {}).value || "";
+      const file = document.querySelector('[name="_systemfield_resume"]').files[0];
+      const missing = [];
+      if (!value("_systemfield_name")) missing.push("Name is required");
+      if (!value("_systemfield_email")) missing.push("Email is required");
+      if (!file) missing.push("Resume is required");
+      if (!chosen) missing.push("Choose a location from the list");
+      const errors = document.getElementById("errors");
+      if (missing.length) { errors.textContent = missing.join(". "); errors.hidden = false; return; }
+      const data = new FormData();
+      data.append("name", value("_systemfield_name")); data.append("email", value("_systemfield_email"));
+      data.append("auth", auth); data.append("location", chosen); data.append("years", value("years"));
+      data.append("resume", file);
+      await fetch("/submit", { method: "POST", body: data });
+      document.getElementById("root").innerHTML = "<h1>Application submitted</h1><p>We have received your application and will be in touch.</p>";
+    });
+  }, 300);
+</script>
+</body></html>

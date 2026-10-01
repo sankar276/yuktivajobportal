@@ -30,7 +30,7 @@ class ConfigError(Exception):
 
 class StrictModel(BaseModel):
     # Unknown keys are almost always typos ("min_scroe"); refuse them.
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, validate_assignment=True)
 
 
 # --------------------------------------------------------------------- enums
@@ -133,6 +133,9 @@ class Profile(StrictModel):
     current_company: str = ""
     current_title: str = ""
     years_experience: int | None = None
+    #: A clearance you hold ("Secret", "TS/SCI"). Empty = none, and postings
+    #: that require an active clearance are skipped.
+    security_clearance: str = ""
     work_authorization: WorkAuthorization = Field(default_factory=WorkAuthorization)
     contract: ContractTerms = Field(default_factory=ContractTerms)
     eeo: Eeo = Field(default_factory=Eeo)
@@ -263,6 +266,8 @@ class Lane(StrictModel):
     locations: LocationRules = Field(default_factory=LocationRules)
     compensation: Compensation = Field(default_factory=Compensation)
     skip_if_description_has: list[str] = Field(default_factory=list)
+    #: Skip postings that state more travel than this.
+    max_travel_percent: int | None = Field(default=None, ge=0, le=100)
     weights: Weights = Field(default_factory=Weights)
     #: Score (0-100) from which a job lands on the shortlist.
     shortlist_at: float = Field(default=60, ge=0, le=100)
@@ -289,6 +294,8 @@ class EmailPolicy(StrictModel):
     min_seconds_between_sends: int = Field(default=60, ge=0)
     #: Blind-copy yourself so every sent application is in your own mailbox too.
     bcc_self: bool = True
+    #: Also attach the Word version (many staffing vendors ask for one).
+    attach_docx: bool = False
 
 
 class Policy(StrictModel):
@@ -304,6 +311,8 @@ class Policy(StrictModel):
     fresh_hours: int = Field(default=24, ge=1)
     #: Never apply to postings older than this.
     max_job_age_days: int = Field(default=30, ge=1)
+    #: How many shortlisted roles to prepare (resume + application) per run.
+    prepare_per_run: int = Field(default=15, ge=0)
 
 
 class SearchConfig(StrictModel):

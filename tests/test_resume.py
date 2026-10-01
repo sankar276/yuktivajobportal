@@ -150,7 +150,7 @@ def test_contact_line_strips_url_schemes(user_config: UserConfig) -> None:
 
 @pytest.mark.browser
 def test_pdf_and_docx_contain_the_resume(
-    user_config: UserConfig, settings: Settings, tmp_path: Path
+    user_config: UserConfig, settings: Settings, tmp_path: Path, browser
 ) -> None:
     result = tailor(
         user_config.resume,
@@ -161,7 +161,7 @@ def test_pdf_and_docx_contain_the_resume(
     html = render_html(result.resume)
     assert "<script" not in html
 
-    pdf = write_pdf(html, tmp_path / "out" / "resume.pdf", settings=settings)
+    pdf = write_pdf(html, tmp_path / "out" / "resume.pdf", settings=settings, browser=browser)
     reader = PdfReader(str(pdf))
     text = "\n".join(page.extract_text() for page in reader.pages)
     assert 1 <= len(reader.pages) <= 2
@@ -324,20 +324,22 @@ def _job(session: Session) -> Job:
 
 @pytest.mark.browser
 def test_build_resume_stores_files_and_reuses_identical_content(
-    session: Session, settings: Settings, user: User, user_config: UserConfig
+    session: Session, settings: Settings, user: User, user_config: UserConfig, browser
 ) -> None:
     job = _job(session)
-    first = build_resume(session, settings, user_config, user, job)
+    first = build_resume(session, settings, user_config, user, job, browser=browser)
     assert Path(first.pdf_path).name == "Alex_Example_Resume.pdf"
     assert Path(first.pdf_path).exists() and Path(first.docx_path).exists()
     assert f"job-{job.id}" in first.pdf_path
     assert "Kubernetes" in first.matched and first.content["name"] == "Alex Example"
 
-    again = build_resume(session, settings, user_config, user, job)
+    again = build_resume(session, settings, user_config, user, job, browser=browser)
     assert again.id == first.id  # nothing changed, nothing re-rendered
 
     job.description_text = "Vault, OPA and Kyverno policy as code. Zero trust."
-    changed = build_resume(session, settings, user_config, user, job, variant="security")
+    changed = build_resume(
+        session, settings, user_config, user, job, variant="security", browser=browser
+    )
     assert changed.id != first.id and changed.pdf_path != first.pdf_path
     assert Path(first.pdf_path).exists()  # the earlier version is kept as sent
 
@@ -349,6 +351,7 @@ def test_build_resume_applies_guarded_rewrites_when_enabled(
     user: User,
     user_config: UserConfig,
     monkeypatch: pytest.MonkeyPatch,
+    browser,
 ) -> None:
     job = _job(session)
     pinned = user_config.resume.experience[0].bullets[0]
@@ -360,7 +363,7 @@ def test_build_resume_applies_guarded_rewrites_when_enabled(
     monkeypatch.setattr(settings, "llm_rephrase", True)
 
     variant = build_resume(
-        session, settings, user_config, user, job, llm=LLM(settings, client=fake)
+        session, settings, user_config, user, job, llm=LLM(settings, client=fake), browser=browser
     )
 
     assert variant.content["experience"][0]["bullets"][0] == reworded

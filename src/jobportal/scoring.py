@@ -18,7 +18,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobportal.config import Employment, Lane, SearchConfig, Seniority
+from jobportal.config import Employment, Lane, Profile, SearchConfig, Seniority
 from jobportal.db import utcnow
 from jobportal.models import Decision, Job, JobScore
 from jobportal.text import company_key, find_terms, phrase_in_title, sha256_text, title_words
@@ -38,6 +38,7 @@ class Scorable(Protocol):
     comp_currency: str | None
     comp_period: str | None
     needs_detail: bool
+    facts: dict[str, Any]
 
     @property
     def effective_posted_at(self) -> datetime | None: ...
@@ -401,6 +402,17 @@ def score_lane(job: Scorable, lane: Lane, *, now: datetime, fresh_hours: int) ->
             result.skip = f"Posting mentions '{phrase}'"
             return result
 
+    travel = (job.facts or {}).get("travel_percent")
+    if (
+        lane.max_travel_percent is not None
+        and travel is not None
+        and travel > lane.max_travel_percent
+    ):
+        result.skip = (
+            f"States {travel}% travel; your limit for this lane is {lane.max_travel_percent}%"
+        )
+        return result
+
     pay_note, pay_fail = _pay_check(job, lane)
     if pay_fail:
         result.skip = pay_note
@@ -425,7 +437,26 @@ def is_blocked(company_name: str, blocked: list[str]) -> str | None:
     return None
 
 
-def score_job(job: Scorable, search: SearchConfig, *, now: datetime | None = None) -> ScoreResult:
+def profile_block(job: Scorable, profile: Profile | None) -> str | None:
+    """A stated requirement of the posting that you cannot meet, whatever the lane."""
+    if profile is None:
+        return None
+    facts = job.facts or {}
+    if facts.get("clearance") == "required" and not profile.security_clearance:
+        level = facts.get("clearance_level")
+        return f"Requires an active {level + ' ' if level else ''}security clearance"
+    if facts.get("sponsorship") == "not_offered" and profile.work_authorization.needs_sponsorship:
+        return "Posting says visa sponsorship is not available"
+    return None
+
+
+def score_job(
+    job: Scorable,
+    search: SearchConfig,
+    *,
+    now: datetime | None = None,
+    profile: Profile | None = None,
+) -> ScoreResult:
     now = now or utcnow()
     blocked = is_blocked(job.company_name, search.blocked_companies)
     if blocked:
@@ -435,6 +466,15 @@ def score_job(job: Scorable, search: SearchConfig, *, now: datetime | None = Non
             decision=Decision.skip,
             reasons=[f"{job.company_name} is on your blocked list"],
             breakdown={"blocked": blocked},
+        )
+    cannot_meet = profile_block(job, profile)
+    if cannot_meet:
+        return ScoreResult(
+            lane=None,
+            score=0.0,
+            decision=Decision.skip,
+            reasons=[cannot_meet],
+            breakdown={"requirement": cannot_meet},
         )
 
     results = [
@@ -461,6 +501,10 @@ def score_job(job: Scorable, search: SearchConfig, *, now: datetime | None = Non
     shortlisted = best.score >= lane.shortlist_at and not best.provisional
     reasons = [f.note for f in sorted(best.factors, key=lambda f: f.points, reverse=True)]
     reasons += best.notes
+    asked = (job.facts or {}).get("years_required")
+    have = profile.years_experience if profile is not None else None
+    if asked and have is not None and asked > have:
+        reasons.append(f"Asks for {asked}+ years; your profile says {have}")
     return ScoreResult(
         lane=best.lane,
         score=best.score,
@@ -523,8 +567,14 @@ class ScoreStats:
     unchanged: int = 0
 
 
-def rubric_hash(search: SearchConfig) -> str:
+def rubric_hash(search: SearchConfig, profile: Profile | None = None) -> str:
     payload = search.model_dump(mode="json", exclude={"policy": {"mode", "auto", "email"}})
+    if profile is not None:
+        payload["profile"] = {
+            "clearance": profile.security_clearance,
+            "needs_sponsorship": profile.work_authorization.needs_sponsorship,
+            "years": profile.years_experience,
+        }
     return sha256_text(json.dumps(payload, sort_keys=True))
 
 
@@ -541,6 +591,7 @@ def _input_hash(job: Job, rubric: str) -> str:
         str(job.comp_max),
         job.comp_period,
         str(job.needs_detail),
+        json.dumps(job.facts or {}, sort_keys=True),
     )
 
 
@@ -552,10 +603,11 @@ def score_jobs(
     now: datetime | None = None,
     job_ids: list[int] | None = None,
     force: bool = False,
+    profile: Profile | None = None,
 ) -> ScoreStats:
     """Score open jobs that are new, changed, or whose score has gone stale."""
     now = now or utcnow()
-    rubric = rubric_hash(search)
+    rubric = rubric_hash(search, profile)
     stats = ScoreStats()
     query = select(Job).where(Job.closed_at.is_(None))
     if job_ids is not None:
@@ -575,7 +627,7 @@ def score_jobs(
         ):
             stats.unchanged += 1
             continue
-        result = score_job(job, search, now=now)
+        result = score_job(job, search, now=now, profile=profile)
         if current is None:
             current = JobScore(job_id=job.id, user_id=user_id)
             session.add(current)

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from jobportal.comp import extract_comp
 from jobportal.config import Employment
 from jobportal.db import utcnow
+from jobportal.facts import extract_facts
 from jobportal.http import FetchError, NotFound, PoliteClient, RobotsDisallowed
 from jobportal.models import Job, Source, SourceStatus
 from jobportal.sources import ADAPTERS, CrawlContext, Listing, RawJob, SourceRef, SourceSpec
@@ -309,6 +310,13 @@ def _fill_detail(job: Job, raw: RawJob) -> None:
         or (Employment.contract.value if _CONTRACT_TEXT_RE.search(job.description_text) else None)
     )
     job.needs_detail = False
+    declared = (raw.raw or {}).get("workplaceType") or (raw.raw or {}).get("remoteType")
+    job.facts = extract_facts(
+        job.description_text,
+        remote=job.remote,
+        location=job.location,
+        declared_workplace=declared if isinstance(declared, str) else None,
+    )
 
     if raw.comp_min is not None or raw.comp_max is not None:
         job.comp_min, job.comp_max = raw.comp_min, raw.comp_max
