@@ -81,7 +81,8 @@ class GreenhouseAdapter(SourceAdapter):
             token = segments[2]
         elif _HOST_RE.match(host):
             if segments[:1] == ["embed"]:
-                token = (parse_qs(parts.query).get("for") or [None])[0]
+                named = parse_qs(parts.query).get("for")
+                token = named[0] if named else None
             elif segments:
                 token = segments[0]
         if token and _TOKEN_RE.match(token):

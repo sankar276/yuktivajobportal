@@ -272,12 +272,14 @@ def prepare_application(
             application.status = AppStatus.needs_answers.value
     else:
         application.prepared = {"channel": "manual", "url": job.url, "resume": variant.pdf_path}
+        if job.source.kind == SourceKind.workday.value:
+            why = (
+                "Workday applications need an account on the company's site, so this one is yours."
+            )
+        else:
+            why = "There is no application form here that the app can read, so this one is yours."
         blockers.append(
-            {
-                "kind": "manual",
-                "detail": "This site's application needs you (an account or a multi-step form). "
-                "Your tailored resume is ready to upload.",
-            }
+            {"kind": "manual", "detail": f"{why} Your tailored resume is ready to upload."}
         )
 
     warning = _ledger_warning(session, config, user, job, application.id, now)

@@ -66,7 +66,7 @@ def write_docx(resume: TailoredResume, path: Path) -> Path:
     section = document.sections[0]
     section.left_margin = section.right_margin = Inches(0.7)
     section.top_margin = section.bottom_margin = Inches(0.6)
-    usable_width = section.page_width - section.left_margin - section.right_margin
+    usable_width = (section.page_width or Inches(8.5)) - Inches(0.7) - Inches(0.7)
 
     normal = document.styles["Normal"]
     normal.font.name = "Arial"

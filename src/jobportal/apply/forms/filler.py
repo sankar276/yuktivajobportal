@@ -368,19 +368,27 @@ def _await_outcome(
 
 
 def _robots_blocker(url: str, client: PoliteClient | None) -> dict[str, str] | None:
+    """Unattended page loads honour robots.txt, like every other automated request."""
     if client is None:
         return None
     try:
-        allowed = client.allowed(url)
-    except Exception as exc:  # robots lookup must never crash a run
+        if client.allowed(url):
+            return None
+        unreachable = client.robots_for(url).unreachable
+    except Exception as exc:  # a robots lookup must never crash a run
         log.warning("robots check failed for %s: %s", url, exc)
-        allowed = False
-    if allowed:
-        return None
-    return {
-        "kind": "robots",
-        "detail": "The site's robots.txt asks automated clients not to open this page, so it is yours to open.",
-    }
+        unreachable = True
+    if unreachable:
+        detail = (
+            "The site's robots.txt could not be read just now, so the page was not opened "
+            "automatically. Prepare it again later, or open it yourself."
+        )
+    else:
+        detail = (
+            "The site's robots.txt asks automated clients not to open this page, "
+            "so it is yours to open."
+        )
+    return {"kind": "robots", "detail": detail}
 
 
 def prepare(

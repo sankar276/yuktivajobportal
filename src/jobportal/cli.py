@@ -561,6 +561,7 @@ def serve(
         require_safe_binding(host, settings)
     except RuntimeError as exc:
         raise _fail(str(exc)) from exc
+    settings.host = host  # the address being served is an address the app answers to
     init_db()
     logging.getLogger().setLevel(logging.INFO)
     application = create_app(settings, worker_minutes=crawl_minutes if with_worker else None)

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from jobportal.config import Policy
@@ -35,7 +36,7 @@ class AutoDecision:
     reasons: list[str] = field(default_factory=list)
 
 
-def _sent_or_queued(since: datetime) -> object:
+def _sent_or_queued(since: datetime) -> ColumnElement[bool]:
     """Went out since ``since``, or is cleared to go out."""
     return or_(
         and_(Application.status.in_(_SENT), Application.submitted_at >= since),
@@ -43,7 +44,7 @@ def _sent_or_queued(since: datetime) -> object:
     )
 
 
-def _count(session: Session, query: Select[tuple[int]], exclude_id: int | None) -> int:
+def _count(session: Session, query: Select[Any], exclude_id: int | None) -> int:
     if exclude_id is not None:
         query = query.where(Application.id != exclude_id)
     return session.scalar(query) or 0

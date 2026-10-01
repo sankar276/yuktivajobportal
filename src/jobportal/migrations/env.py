@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from alembic import context
 
@@ -13,7 +13,7 @@ config = context.config
 target_metadata = Base.metadata
 
 
-def render_item(type_: str, obj: Any, autogen_context: Any) -> str | bool:
+def render_item(type_: str, obj: Any, autogen_context: Any) -> str | Literal[False]:
     """Keep migrations self-contained: render our type decorators as plain SQLAlchemy types."""
     if type_ == "type" and isinstance(obj, UTCDateTime):
         return "sa.DateTime(timezone=True)"

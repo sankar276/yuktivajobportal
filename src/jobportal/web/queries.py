@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from jobportal.models import (
@@ -70,7 +70,7 @@ def _like(term: str) -> str:
     return f"%{escaped}%"
 
 
-def _base(user_id: int) -> Select[tuple[Job, JobScore, Application]]:
+def _base(user_id: int) -> Any:
     return (
         select(Job, JobScore, Application)
         .join(JobScore, and_(JobScore.job_id == Job.id, JobScore.user_id == user_id))

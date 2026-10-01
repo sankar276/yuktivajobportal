@@ -1,0 +1,15 @@
+# Career pages to watch: one job-board address per line, optionally followed
+# by ", Company Name". Load the list with:
+#
+#     jobportal sources import config/sources.example.txt
+#
+# These boards were reachable on 2026-09-30. They are a starting point to show
+# the format, not a recommendation: replace them with the companies you would
+# actually work for. To add one, open the company's careers page, click any
+# job, and use that address (Greenhouse, Lever, Ashby and Workday are read).
+
+https://boards.greenhouse.io/stripe, Stripe
+https://jobs.ashbyhq.com/openai, OpenAI
+https://jobs.ashbyhq.com/ramp, Ramp
+https://jobs.lever.co/palantir, Palantir
+https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite, NVIDIA

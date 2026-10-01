@@ -1,0 +1,44 @@
+# docker compose up --build
+#
+# Needs a .env with at least:
+#   POSTGRES_PASSWORD=...     (database)
+#   JOBPORTAL_PASSWORD=...    (to sign in to the app)
+# Your profile, search and resume files go in ./data (created by
+# `docker compose run --rm app jobportal init`).
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobportal
+      POSTGRES_DB: jobportal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobportal -d jobportal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb            # Chromium needs more shared memory than Docker's default
+    env_file: .env
+    environment:
+      JOBPORTAL_DATA_DIR: /data
+      JOBPORTAL_DATABASE_URL: postgresql+psycopg://jobportal:${POSTGRES_PASSWORD}@db:5432/jobportal
+      JOBPORTAL_PASSWORD: ${JOBPORTAL_PASSWORD:?set JOBPORTAL_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8000:8000"   # reachable from this machine only; put a TLS proxy in front to expose it
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db:
