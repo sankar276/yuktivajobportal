@@ -47,6 +47,10 @@ jobportal = "jobportal.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/jobportal"]
 
+# `jobportal init` copies these into the data folder.
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "jobportal/examples"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
