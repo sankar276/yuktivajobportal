@@ -132,6 +132,10 @@ class Source(Base):
     etag: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_modified: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    #: Set when you remove a source whose roles you applied to. The row stays so
+    #: that history (and the guard against applying twice) survives; it is no
+    #: longer read or shown, and adding the source again brings it back.
+    removed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(back_populates="source", cascade="all, delete-orphan")
 
@@ -178,6 +182,9 @@ class Job(Base):
     is_backfill: Mapped[bool] = mapped_column(Boolean, default=False)
     #: Listed without a description; the detail page has not been fetched yet.
     needs_detail: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Detail fetches that failed in a row, and when the next one may be tried.
+    detail_failures: Mapped[int] = mapped_column(Integer, default=0)
+    detail_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     comp_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     comp_max: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -288,6 +295,12 @@ class Application(Base):
     confirmation: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    #: Bumped on every write. Two writers working from the same reading of an
+    #: application cannot both win: the second one fails instead of, say,
+    #: sending something you dismissed a moment ago.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+    __mapper_args__ = {"version_id_col": version}
 
     job: Mapped[Job] = relationship(back_populates="applications")
     resume_variant: Mapped[ResumeVariant | None] = relationship()

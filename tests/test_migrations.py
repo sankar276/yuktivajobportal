@@ -18,7 +18,7 @@ def test_migrations_build_the_schema_the_models_describe(settings: Settings) -> 
         connection.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
 
     upgrade()
-    assert current_revision() == "0001"
+    assert current_revision() == "0002"
     assert set(Base.metadata.tables) <= set(inspect(engine).get_table_names())
 
     with engine.connect() as connection:
