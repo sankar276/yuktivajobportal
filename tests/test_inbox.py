@@ -240,7 +240,7 @@ class FakeImap:
 
     instances: list[FakeImap] = []
 
-    def __init__(self, host: str, port: int, timeout: int = 0) -> None:
+    def __init__(self, host: str, port: int, timeout: int = 0, ssl_context=None) -> None:
         self.host, self.port, self.commands = host, port, []
         FakeImap.instances.append(self)
 
@@ -261,6 +261,8 @@ class FakeImap:
         self.commands.append((command, *args))
         if command == "SEARCH":
             return "OK", [b"41 42 43"]
+        if args[1] == "(RFC822.SIZE)":
+            return "OK", [f"1 (UID {uid} RFC822.SIZE 10)".encode() for uid in args[0].split(",")]
         uid = args[0]
         return "OK", [(f"{uid} (UID {uid} BODY[] {{12}}".encode(), f"message {uid}".encode()), b")"]
 
@@ -288,7 +290,8 @@ def test_imap_is_read_only_and_peeks(settings: Settings, imap: type[FakeImap]) -
     commands = imap.instances[0].commands
     assert ("SELECT", '"Recruiters"', True) in commands  # opened read-only
     assert ("SEARCH", None, "SINCE 16-Sep-2026") in commands  # first run: two weeks back
-    assert all(c[2] == "(BODY.PEEK[])" for c in commands if c[0] == "FETCH")  # nothing marked read
+    # Sizes are asked for first; bodies are peeked at, so nothing is marked read.
+    assert {c[2] for c in commands if c[0] == "FETCH"} == {"(RFC822.SIZE)", "(BODY.PEEK[])"}
     assert commands[-1] == ("LOGOUT",)
     assert not any(c[0] in ("STORE", "COPY", "MOVE", "EXPUNGE", "APPEND") for c in commands)
 

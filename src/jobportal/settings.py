@@ -7,11 +7,16 @@ see :mod:`jobportal.config`.
 
 from __future__ import annotations
 
+import logging
+import stat
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 REPO_URL = "https://github.com/sankar276/yuktivajobportal"
 
@@ -41,6 +46,13 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = Field(default_factory=list)
     #: IANA time zone for dates shown in the app, e.g. ``America/Chicago``.
     timezone: str = "UTC"
+    #: Send the session cookie over https only. Turn on when the app is reached
+    #: through a TLS-terminating proxy.
+    cookie_secure: bool = False
+    #: Addresses of reverse proxies whose ``X-Forwarded-For`` may be believed
+    #: (comma-separated, as uvicorn's ``forwarded_allow_ips``). Unset: the
+    #: header is ignored and the connecting address is the client.
+    trusted_proxies: str | None = None
 
     # --- crawler -----------------------------------------------------------
     #: Sent on every request so site operators can see who is asking and why.
@@ -51,11 +63,18 @@ class Settings(BaseSettings):
     per_host_delay_seconds: float = 1.0
     http_timeout_seconds: float = 20.0
     http_max_attempts: int = 3
+    #: A response larger than this (after decompression) is abandoned.
+    http_max_response_bytes: int = 30_000_000
+    #: Wall-clock limit for one response, however slowly it trickles in.
+    http_deadline_seconds: float = 120.0
 
     # --- browser -----------------------------------------------------------
     #: Path to a Chromium/Chrome binary. Unset = the one Playwright installed.
     chromium_path: str | None = None
     headless: bool = True
+    #: Run Chromium inside its own sandbox. Off by default because it does not
+    #: start as root or in most containers; turn it on where it works.
+    chromium_sandbox: bool = False
     #: Let the crawler and the form filler reach localhost and private
     #: addresses. Off by default; only tests and local demos need it.
     allow_local_addresses: bool = False
@@ -90,6 +109,20 @@ class Settings(BaseSettings):
     #: Every rewrite must pass the fact guard or the original text is kept.
     llm_rephrase: bool = False
 
+    # --------------------------------------------------------------- validation
+    @field_validator(
+        "database_url", "password", "secret_key", "trusted_proxies", "chromium_path",
+        "smtp_host", "smtp_username", "smtp_password", "mail_from",
+        "imap_host", "imap_username", "imap_password", "anthropic_api_key",
+        mode="before",
+    )  # fmt: skip
+    @classmethod
+    def _blank_means_unset(cls, value: Any) -> Any:
+        """``JOBPORTAL_PASSWORD=`` in a ``.env`` file means "no password", not an empty one."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     # ------------------------------------------------------------------ helpers
     @property
     def resolved_database_url(self) -> str:
@@ -122,8 +155,19 @@ class Settings(BaseSettings):
         return self.anthropic_api_key is not None
 
     def ensure_dirs(self) -> None:
+        """Create the data folders, readable by you only.
+
+        They hold your resume, your answers, mail drafts and the database.
+        """
         for path in (self.data_dir, self.resumes_dir, self.screenshots_dir, self.outbox_dir):
-            path.mkdir(parents=True, exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            mode = stat.S_IMODE(self.data_dir.stat().st_mode)
+            if mode & 0o077:
+                self.data_dir.chmod(mode & 0o700)
+                log.info("closed %s to other users of this machine", self.data_dir)
+        except OSError as exc:  # a read-only mount, or a platform without these modes
+            log.debug("could not tighten %s: %s", self.data_dir, exc)
 
 
 @lru_cache

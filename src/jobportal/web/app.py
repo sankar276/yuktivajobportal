@@ -18,7 +18,14 @@ from jobportal.settings import Settings, get_settings
 from jobportal.web import queries
 from jobportal.web.deps import STATIC_DIR, ConfigProblem, back, build_templates, flash
 from jobportal.web.routes import admin, applications, feed
-from jobportal.web.security import GuardMiddleware, LoginLimiter, session_secret
+from jobportal.web.security import (
+    GuardMiddleware,
+    LoginLimiter,
+    check_secrets,
+    load_session_epoch,
+    password_fingerprint,
+    session_secret,
+)
 from jobportal.worker import Worker, start_in_thread
 
 SESSION_MAX_AGE = 14 * 24 * 3600
@@ -28,6 +35,8 @@ def create_app(settings: Settings | None = None, *, worker_minutes: int | None =
     """Build the app. ``worker_minutes`` also runs the background worker in-process."""
     settings = settings or get_settings()
     settings.ensure_dirs()
+    check_secrets(settings)
+    secret = session_secret(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -53,6 +62,8 @@ def create_app(settings: Settings | None = None, *, worker_minutes: int | None =
     app.state.templates = build_templates(settings)
     app.state.worker = None
     app.state.login_limiter = LoginLimiter()
+    app.state.session_epoch = load_session_epoch(settings)
+    app.state.password_fingerprint = password_fingerprint(settings, secret)
 
     def nav_counts(request: Request) -> dict[str, int]:
         user_id = getattr(request.state, "user_id", None)
@@ -67,10 +78,11 @@ def create_app(settings: Settings | None = None, *, worker_minutes: int | None =
     app.add_middleware(GuardMiddleware, settings=settings)
     app.add_middleware(
         SessionMiddleware,
-        secret_key=session_secret(settings),
+        secret_key=secret,
         session_cookie="jobportal_session",
         same_site="strict",
         max_age=SESSION_MAX_AGE,
+        https_only=settings.cookie_secure,
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(feed.router)

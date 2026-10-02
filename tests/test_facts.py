@@ -119,3 +119,87 @@ def test_workplace(remote, location, description, declared, expected) -> None:
 
 def test_only_stated_facts_are_reported() -> None:
     assert extract_facts("Build platforms with Kubernetes.") == {}
+
+
+# ----------------------------------------------- precision (review findings)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("No security clearance required.", None),
+        ("This role does not require a security clearance.", None),
+        ("An active security clearance is a plus but not required.", None),
+        ("Employment requires successful clearance of a background check.", None),
+        ("Candidates with an active clearance are encouraged to apply.", None),
+        ("Active clearance preferred.", None),
+        (
+            "Must be able to obtain and maintain a Top Secret clearance. Active clearance preferred.",
+            "obtainable",
+        ),
+        ("Ability to obtain a security clearance.", "obtainable"),
+        ("Interim Secret clearance or higher is required to start", "required"),
+        ("Active Secret clearance required", "required"),
+        ("Must hold an active TS/SCI clearance.", "required"),
+        ("- Active TS/SCI clearance", "required"),
+        ("This position requires a Top Secret clearance.", "required"),
+    ],
+)
+def test_clearance_is_required_only_when_the_posting_says_so(
+    text: str, expected: str | None
+) -> None:
+    assert extract_facts(text).get("clearance") == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("We cover 100% of your travel costs for offsites.", None),
+        ("Benefits include travel reimbursement, 100% employer-paid health insurance.", None),
+        ("Remote: 100%\nTravel: 10%", 10),
+        ("This role is 100% remote with occasional travel", None),
+        ("Travel is minimal and our 401(k) match is 50% of contributions", None),
+        ("Improved uptime to 99.99% for the travel booking API", None),
+        ("Up to 25% travel", 25),
+        ("Travel up to 20% of the time", 20),
+        ("Willingness to travel 30%", 30),
+        ("up to 15% international travel", 15),
+        ("Travel required: approximately 40%", 40),
+    ],
+)
+def test_travel_is_only_a_number_that_belongs_to_travel(text: str, expected: int | None) -> None:
+    assert extract_facts(text).get("travel_percent") == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Visa sponsorship is not currently available for this role.", "not_offered"),
+        ("Sponsorship cannot be offered", "not_offered"),
+        ("We are unable to sponsor visas.", "not_offered"),
+        ("Must be authorized to work in the US without sponsorship.", "not_offered"),
+        ("This is not an entry-level role and sponsorship is available", "offered"),
+        ("Visa sponsorship is available.", "offered"),
+        ("We will sponsor H-1B visas.", "offered"),
+        ("Open to candidates with or without sponsorship", None),
+    ],
+)
+def test_sponsorship_is_read_clause_by_clause(text: str, expected: str | None) -> None:
+    assert extract_facts(text).get("sponsorship") == expected
+
+
+def test_a_hybrid_cloud_is_not_a_hybrid_workplace() -> None:
+    assert "workplace" not in extract_facts("You will run our hybrid cloud across AWS and on-prem.")
+    hybrid = extract_facts("This is a hybrid role with three days a week in the office.")
+    assert hybrid["workplace"] == "hybrid"
+
+
+def test_hostile_whitespace_cannot_stall_extraction() -> None:
+    import time
+
+    started = time.perf_counter()
+    extract_facts("5" + "\f" * 20_000)  # took hours before; see the security review
+    extract_facts("5 " * 60_000)
+    extract_facts("10+ years\tof experience")
+    assert time.perf_counter() - started < 2.0
+    assert extract_facts("10+ years of\nprofessional experience")["years_required"] == 10

@@ -28,6 +28,8 @@ from jobportal.web.app import create_app
 from jobportal.web.security import require_safe_binding
 from tests.conftest import NOW
 
+LOCAL = ("127.0.0.1", 50000)
+
 DESCRIPTION = (
     "Own the architecture of our Kubernetes platform on AWS with Terraform and GitOps. "
     "Zero trust with Vault, operators in Go, Kafka. 10+ years of experience. Up to 20% travel. "
@@ -38,7 +40,8 @@ DESCRIPTION = (
 @pytest.fixture
 def app_client(settings: Settings, session: Session, user: User) -> TestClient:
     settings.allowed_hosts = ["testserver"]
-    return TestClient(create_app(settings), follow_redirects=False)
+    # No password is set, so the app only answers this machine itself.
+    return TestClient(create_app(settings), follow_redirects=False, client=LOCAL)
 
 
 @pytest.fixture
@@ -544,15 +547,141 @@ def test_password_protects_everything_but_the_login_page(
     assert client.get("/feed").status_code == 303
 
 
-def test_login_attempts_are_limited(settings: Settings, session: Session, user: User) -> None:
+def _protected(settings: Settings, **client: object) -> TestClient:
     settings.allowed_hosts = ["testserver"]
     settings.password = SecretStr("correct horse")
-    client = TestClient(create_app(settings), follow_redirects=False)
+    return TestClient(create_app(settings), follow_redirects=False, **client)  # type: ignore[arg-type]
+
+
+def test_wrong_passwords_slow_sign_in_down_but_never_lock_the_owner_out(
+    settings: Settings, session: Session, user: User
+) -> None:
+    client = _protected(settings)
+    waits: list[float] = []
+
+    async def no_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    client.app.state.login_limiter.sleep = no_sleep  # type: ignore[attr-defined]
     statuses = [client.post("/login", data={"password": "x"}).status_code for _ in range(7)]
-    assert statuses[:5] == [401] * 5 and statuses[5:] == [429, 429]
-    assert (
-        client.post("/login", data={"password": "correct horse"}).status_code == 429
-    )  # still locked
+    assert statuses == [401] * 7  # refused, each a little slower than the last
+    assert waits == sorted(waits) and waits[-1] > waits[0] > 0 and max(waits) <= 5.0
+    # The right password still works, from the same address, straight after.
+    assert client.post("/login", data={"password": "correct horse"}).headers["location"] == "/feed"
+
+    # Another address (as the owner behind a shared proxy would be) is delayed, not refused.
+    other = TestClient(client.app, follow_redirects=False, client=("203.0.113.9", 4000))
+    assert other.post("/login", data={"password": "correct horse"}).status_code == 303
+
+
+def test_sign_in_throttle_stays_small_and_counts_failures_only() -> None:
+    from jobportal.web.security import LOGIN_MAX_ADDRESSES, LoginLimiter
+
+    limiter = LoginLimiter()
+    for index in range(LOGIN_MAX_ADDRESSES + 500):
+        limiter.failed(f"198.51.100.{index}")
+    assert len(limiter._by_address) <= LOGIN_MAX_ADDRESSES
+    fresh = LoginLimiter()
+    assert fresh.delay("203.0.113.1") == 0.0
+    fresh.succeeded("203.0.113.1")
+    assert fresh.delay("203.0.113.1") == 0.0  # successes never add a delay
+    fresh.failed("203.0.113.1")
+    assert fresh.delay("203.0.113.1") > 0.0
+
+
+def test_an_empty_password_never_signs_anyone_in(
+    settings: Settings, session: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _protected(settings)
+    assert client.post("/login").status_code == 401
+    assert client.post("/login", data={"password": ""}).status_code == 401
+    assert client.get("/feed").status_code == 303
+
+    # A blank value in the environment means "no password", not an empty one.
+    monkeypatch.setenv("JOBPORTAL_PASSWORD", "   ")
+    monkeypatch.setenv("JOBPORTAL_SECRET_KEY", "")
+    blank = Settings()
+    assert blank.password is None and blank.secret_key is None
+    with pytest.raises(RuntimeError, match="without a password"):
+        require_safe_binding("0.0.0.0", blank)
+
+
+def test_short_passwords_and_keys_are_refused_at_start(settings: Settings) -> None:
+    settings.password = SecretStr("short")
+    with pytest.raises(RuntimeError, match="shorter than 8"):
+        create_app(settings)
+    settings.password = SecretStr("correct horse")
+    settings.secret_key = SecretStr("k" * 10)
+    with pytest.raises(RuntimeError, match="shorter than 32"):
+        create_app(settings)
+
+
+def test_the_signing_key_file_is_private_and_replaced_when_unusable(settings: Settings) -> None:
+    from jobportal.web.security import session_secret
+
+    settings.ensure_dirs()
+    path = settings.data_dir / ".session-key"
+    path.write_text("", encoding="utf-8")  # an empty key would let anyone forge a session
+    key = session_secret(settings)
+    assert len(key) >= 32 and path.read_text(encoding="utf-8") == key
+    assert path.stat().st_mode & 0o077 == 0
+    assert settings.data_dir.stat().st_mode & 0o077 == 0
+    assert session_secret(settings) == key  # stable once written
+
+
+def test_signing_out_ends_copied_sessions_too(
+    settings: Settings, session: Session, user: User
+) -> None:
+    client = _protected(settings)
+    client.post("/login", data={"password": "correct horse"})
+    assert client.get("/feed").status_code == 200
+    copied = dict(client.cookies)  # what someone who copied the cookie would hold
+
+    assert client.post("/logout").headers["location"] == "/login"
+    thief = TestClient(client.app, follow_redirects=False, cookies=copied)
+    assert thief.get("/feed").headers["location"] == "/login"
+
+    # A session also dies with the password it was opened under.
+    client.post("/login", data={"password": "correct horse"})
+    held = dict(client.cookies)
+    settings.password = SecretStr("a different password")
+    changed = TestClient(create_app(settings), follow_redirects=False, cookies=held)
+    assert changed.get("/feed").headers["location"] == "/login"
+
+
+def test_the_session_cookie_can_be_marked_secure(
+    settings: Settings, session: Session, user: User
+) -> None:
+    settings.cookie_secure = True
+    client = _protected(settings, base_url="https://testserver")
+    response = client.post("/login", data={"password": "correct horse"})
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_without_a_password_only_this_machine_is_answered(
+    settings: Settings, session: Session, user: User
+) -> None:
+    settings.allowed_hosts = ["testserver"]
+    app = create_app(settings)
+    remote = TestClient(app, follow_redirects=False, client=("192.168.1.50", 40000))
+    assert remote.get("/feed").status_code == 403
+    assert "no password" in remote.get("/feed").text
+    local = TestClient(app, follow_redirects=False, client=LOCAL)
+    assert local.get("/feed").status_code == 200
+
+
+def test_going_back_never_leaves_the_site(app_client: TestClient, jobs: dict[str, Job]) -> None:
+    url = f"/jobs/{jobs['principal'].id}/save"
+    for referer, expected in (
+        ("http://testserver//evil.example/phish", None),
+        ("http://testserver/\\evil.example", None),
+        ("http://evil.example/feed", None),
+        ("http://testserver/feed?view=all", "/feed?view=all"),
+    ):
+        location = app_client.post(url, headers={"referer": referer}).headers["location"]
+        assert not location.startswith(("//", "/\\", "http"))
+        if expected:
+            assert location == expected
 
 
 def test_refuses_to_listen_publicly_without_a_password(settings: Settings) -> None:
@@ -561,4 +690,7 @@ def test_refuses_to_listen_publicly_without_a_password(settings: Settings) -> No
     with pytest.raises(RuntimeError, match="without a password"):
         require_safe_binding("0.0.0.0", settings)
     settings.password = SecretStr("x")
+    with pytest.raises(RuntimeError, match="shorter than 8"):
+        require_safe_binding("0.0.0.0", settings)
+    settings.password = SecretStr("correct horse")
     require_safe_binding("0.0.0.0", settings)

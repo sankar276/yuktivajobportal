@@ -78,3 +78,52 @@ def test_unreachable_means_disallow_and_robots_txt_itself_is_always_allowed() ->
     assert not RobotsRules.disallow_all().allowed("/jobs")
     rules = RobotsRules.parse("User-agent: *\nDisallow: /\n", TOKEN)
     assert rules.allowed("/robots.txt")
+
+
+def test_a_byte_order_mark_does_not_hide_the_first_group() -> None:
+    rules = RobotsRules.parse("﻿User-agent: *\nDisallow: /\n", TOKEN)
+    assert not rules.allowed("/jobs")
+
+
+def test_wildcard_matching_cannot_be_made_slow() -> None:
+    import time
+
+    pattern = "/" + "*a" * 40 + "*b"
+    rules = RobotsRules.parse(f"User-agent: *\nDisallow: {pattern}\n", TOKEN)
+    started = time.perf_counter()
+    assert rules.allowed("/" + "a" * 2000)  # no "b": the old matcher took minutes on this
+    assert not rules.allowed("/" + "a" * 2000 + "b")
+    assert time.perf_counter() - started < 1.0
+
+
+def test_an_escaped_slash_is_not_a_path_separator() -> None:
+    rules = RobotsRules.parse("User-agent: *\nDisallow: /a/\nAllow: /a%2Fb\n", TOKEN)
+    assert not rules.allowed("/a/b/private")  # "Allow: /a%2Fb" does not open up /a/b
+    assert rules.allowed("/a%2Fb")
+    assert rules.allowed("/a%2fb")  # hex case does not matter
+
+
+def test_a_group_naming_us_with_a_version_applies() -> None:
+    text = "User-agent: yuktivajobportal/0.1\nDisallow: /private\n\nUser-agent: *\nDisallow: /\n"
+    rules = RobotsRules.parse(text, "YuktivaJobPortal")
+    assert rules.allowed("/jobs") and not rules.allowed("/private/x")
+    # ... and a similarly named other crawler's group does not.
+    other = RobotsRules.parse("User-agent: yuktivajobportalbot\nDisallow: /\n", "YuktivaJobPortal")
+    assert other.allowed("/jobs")
+
+
+def test_the_number_of_rules_kept_is_bounded() -> None:
+    from jobportal.robots import MAX_RULES
+
+    text = "User-agent: *\nDisallow: /first\n" + "".join(
+        f"Disallow: /p{index}\n" for index in range(MAX_RULES + 5000)
+    )
+    rules = RobotsRules.parse(text, TOKEN)
+    assert len(rules.rules) == MAX_RULES and not rules.allowed("/first")
+
+
+def test_end_anchors_and_wildcards_together() -> None:
+    rules = RobotsRules.parse("User-agent: *\nDisallow: /*/print$\nDisallow: /x*y*z\n", TOKEN)
+    assert not rules.allowed("/jobs/print")
+    assert rules.allowed("/jobs/print/more")
+    assert not rules.allowed("/x1y2z3") and rules.allowed("/x1z2y")

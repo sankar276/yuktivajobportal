@@ -122,3 +122,25 @@ def test_question_key_normalises_punctuation_and_markers() -> None:
 def test_slugify() -> None:
     assert slugify("Principal Engineer, Platform (Remote)") == "principal-engineer-platform-remote"
     assert slugify("") == "untitled"
+
+
+def test_html_to_text_keeps_cells_and_side_by_side_elements_apart() -> None:
+    assert (
+        html_to_text("<table><tr><td>Kubernetes</td><td>AWS</td></tr></table>") == "Kubernetes AWS"
+    )
+    assert html_to_text("<span>Kubernetes</span><span>AWS</span>") == "Kubernetes AWS"
+    assert (
+        html_to_text("<b>K</b>ubernetes on <i>AWS</i>") == "Kubernetes on AWS"
+    )  # one word stays one
+    assert html_to_text("<p>a</p><!-- hidden --><script>alert(1)</script><p>b</p>") == "a\n\nb"
+
+
+def test_html_to_text_cost_grows_in_step_with_the_input() -> None:
+    import time
+
+    started = time.perf_counter()
+    assert len(html_to_text("<p>hello world</p>" * 10_000)) > 100_000
+    html_to_text("<br>" * 8_000)
+    html_to_text("<a" * 100_000)  # unterminated tags
+    html_to_text("<div>" * 5_000 + "deep" + "</div>" * 5_000)
+    assert time.perf_counter() - started < 3.0  # these took a minute and more before

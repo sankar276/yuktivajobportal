@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, Request
@@ -209,11 +210,22 @@ def is_htmx(request: Request) -> bool:
 
 def back(request: Request, default: str) -> Response:
     """After a form post: return to the page the form was on (same site only)."""
-    target = request.headers.get("referer", "")
-    host = request.headers.get("host", "")
-    if target and f"//{host}/" in target:
-        path = "/" + target.split(f"//{host}/", 1)[1]
-        return RedirectResponse(path, status_code=303)
+    host = request.headers.get("host", "").lower()
+    try:
+        referer = urlsplit(request.headers.get("referer", ""))
+    except ValueError:
+        return RedirectResponse(default, status_code=303)
+    path = referer.path
+    # A path beginning "//" (or "/\\") would be read by the browser as another site.
+    if (
+        host
+        and referer.scheme in ("http", "https")
+        and referer.netloc.lower() == host
+        and path.startswith("/")
+        and not path.startswith(("//", "/\\"))
+    ):
+        target = f"{path}?{referer.query}" if referer.query else path
+        return RedirectResponse(target, status_code=303)
     return RedirectResponse(default, status_code=303)
 
 

@@ -8,17 +8,28 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from functools import lru_cache
+from typing import Any
 
 from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
 
 # space, tab, no-break space, zero-width space
 _WS_RE = re.compile("[ \\t" + chr(0xA0) + chr(0x200B) + "]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
-_TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
-_BLOCK_TAGS = (
-    "p", "div", "br", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
-    "tr", "table", "section", "article", "header", "footer", "blockquote", "hr",
+# "[^<>]" rather than "[^>]": a run of unterminated "<a<a<a" then fails
+# fast instead of being rescanned from every "<".
+_TAG_RE = re.compile(r"<[a-zA-Z/][^<>]*>")
+_BLOCK_TAGS = frozenset(
+    {
+        "p", "div", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "section",
+        "article", "header", "footer", "blockquote", "hr", "pre", "dl", "dt", "dd", "figure",
+        "main", "aside", "nav", "form", "fieldset", "address",
+    }
 )  # fmt: skip
+_CELL_TAGS = frozenset({"td", "th"})
+_SKIPPED_TAGS = frozenset({"script", "style", "noscript", "template", "head", "title"})
+#: Markup beyond this is cut before parsing; a posting is never this long.
+MAX_HTML_CHARS = 400_000
 
 
 def unescape_if_needed(value: str) -> str:
@@ -29,21 +40,51 @@ def unescape_if_needed(value: str) -> str:
 
 
 def html_to_text(value: str | None) -> str:
-    """Readable plain text from an HTML fragment, keeping paragraph and list breaks."""
+    """Readable plain text from an HTML fragment, keeping paragraph and list breaks.
+
+    One pass over the parsed tree, so the cost grows in step with the input.
+    Table cells and elements that sit side by side with nothing between them
+    (skill "pills") are kept apart, so their words do not run together.
+    """
     if not value:
         return ""
-    value = unescape_if_needed(value)
+    value = unescape_if_needed(value[:MAX_HTML_CHARS])
     if not _TAG_RE.search(value):
         return normalize_text(html_lib.unescape(value))
     soup = BeautifulSoup(value, "html.parser")
-    for node in soup(["script", "style", "noscript", "template"]):
-        node.decompose()
-    for node in soup.find_all("li"):
-        node.insert_before("\n- ")
-    for node in soup.find_all(_BLOCK_TAGS):
-        node.insert_before("\n")
-        node.insert_after("\n")
-    return normalize_text(soup.get_text())
+    pieces: list[str] = []
+    # Explicit stack: deeply nested markup must not hit the recursion limit.
+    stack: list[Any] = [soup]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):  # a closing marker pushed below, or a text node
+            if isinstance(node, NavigableString):
+                if type(node) is NavigableString:  # not a comment, doctype or CDATA
+                    pieces.append(str(node))
+            else:
+                pieces.append(node)
+            continue
+        name = getattr(node, "name", None)
+        if name in _SKIPPED_TAGS:
+            continue
+        if name == "br":
+            pieces.append("\n")
+            continue
+        after = ""
+        if name == "li":
+            pieces.append("\n- ")  # the list around it supplies the closing break
+        elif name in _BLOCK_TAGS:
+            pieces.append("\n")
+            after = "\n"
+        elif name in _CELL_TAGS:
+            pieces.append(" ")
+            after = " "
+        elif isinstance(getattr(node, "previous_sibling", None), Tag):
+            pieces.append(" ")  # "<span>Kubernetes</span><span>AWS</span>"
+        if after:
+            stack.append(after)
+        stack.extend(reversed(list(getattr(node, "children", ()))))
+    return normalize_text("".join(pieces))
 
 
 def normalize_text(value: str) -> str:

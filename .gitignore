@@ -2,9 +2,16 @@
 # Your resume, profile, answers, credentials, database, generated resumes and
 # screenshots all live here. The repo only ships the examples in config/.
 /data/
+/demo-data/
 .env
 .env.*
 !.env.example
+.session-key
+.session-epoch
+.send.lock
+/resume.yaml
+/profile.yaml
+/search.yaml
 
 # --- python ---
 __pycache__/
@@ -23,7 +30,10 @@ htmlcov/
 # --- local databases / artifacts ---
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3
+*.eml
 /test-results/
 /playwright-report/
 
@@ -31,3 +41,4 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+.claude/

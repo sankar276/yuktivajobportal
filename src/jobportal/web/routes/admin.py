@@ -19,7 +19,7 @@ from jobportal.settings import Settings
 from jobportal.sources import ADAPTERS, discover_sources
 from jobportal.text import company_key, squash
 from jobportal.web.deps import back, config_dep, db, flash, render, settings_dep, user_dep
-from jobportal.web.security import password_matches
+from jobportal.web.security import end_all_sessions, password_matches
 
 router = APIRouter()
 
@@ -301,30 +301,40 @@ def login_page(request: Request, settings: Settings = Depends(settings_dep)) -> 
 
 
 @router.post("/login")
-def login(
+async def login(
     request: Request,
     password: Annotated[str, Form()] = "",
     settings: Settings = Depends(settings_dep),
 ) -> Response:
     address = request.client.host if request.client else "unknown"
-    if not request.app.state.login_limiter.allow(address):
-        return request.app.state.templates.TemplateResponse(
+    limiter = request.app.state.login_limiter
+    templates = request.app.state.templates
+    # Wrong guesses make the next attempt wait; they never shut the door.
+    if not await limiter.wait(address):
+        return templates.TemplateResponse(
             request,
             "login.html",
-            {"error": "Too many attempts. Wait a minute and try again."},
+            {"error": "Too many sign-in attempts are in progress. Try again in a few seconds."},
             status_code=429,
         )
     if not password_matches(password, settings):
-        return request.app.state.templates.TemplateResponse(
+        limiter.failed(address)
+        return templates.TemplateResponse(
             request, "login.html", {"error": "That is not the password."}, status_code=401
         )
+    limiter.succeeded(address)
     request.session.clear()
     request.session["authenticated"] = True
+    request.session["epoch"] = request.app.state.session_epoch
+    request.session["key"] = request.app.state.password_fingerprint
     return RedirectResponse("/feed", status_code=303)
 
 
 @router.post("/logout")
-def logout(request: Request) -> Response:
+def logout(request: Request, settings: Settings = Depends(settings_dep)) -> Response:
+    # The cookie itself cannot be recalled, so signing out ends every session
+    # there is: a copy of the cookie stops working too.
+    request.app.state.session_epoch = end_all_sessions(settings, request.app.state.session_epoch)
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 

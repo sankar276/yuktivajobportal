@@ -63,10 +63,12 @@ def make_engine(url: str) -> Engine:
     if url.startswith("sqlite"):
         if ":memory:" not in url:
             Path(url.split("///", 1)[-1]).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(url, connect_args={"check_same_thread": False})
+        # hide_parameters: a failing statement is logged without its values,
+        # which would otherwise put message bodies and contact details in the log.
+        engine = create_engine(url, connect_args={"check_same_thread": False}, hide_parameters=True)
         _configure_sqlite(engine)
         return engine
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(url, pool_pre_ping=True, hide_parameters=True)
 
 
 def get_engine() -> Engine:

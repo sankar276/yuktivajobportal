@@ -586,7 +586,16 @@ def serve(
     logging.getLogger().setLevel(logging.INFO)
     application = create_app(settings, worker_minutes=crawl_minutes if with_worker else None)
     typer.echo(f"Open http://{host}:{port}")
-    uvicorn.run(application, host=host, port=port, log_level="warning")
+    # X-Forwarded-For is believed only from proxies you have named; otherwise
+    # anyone could present any address to the sign-in throttle.
+    uvicorn.run(
+        application,
+        host=host,
+        port=port,
+        log_level="warning",
+        proxy_headers=settings.trusted_proxies is not None,
+        forwarded_allow_ips=settings.trusted_proxies,
+    )
 
 
 @app.command("since")

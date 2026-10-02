@@ -34,6 +34,33 @@ def test_public_hosts(host: str) -> None:
     assert not is_local_host(host)
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "100.64.0.1", "100.100.100.200", "192.88.99.1", "198.18.0.1", "fec0::1",
+        "64:ff9b::7f00:1", "2002:7f00:1::", "::ffff:10.0.0.1", "224.0.0.1", "not an address", "",
+    ],
+)  # fmt: skip
+def test_addresses_that_are_not_public(address: str) -> None:
+    assert not netguard.is_public_address(address)
+    if address and " " not in address:
+        assert is_local_host(address)
+
+
+@pytest.mark.parametrize(
+    "address", ["8.8.8.8", "93.184.216.34", "2606:4700::1111", "[2606:4700::1111]"]
+)
+def test_addresses_that_are_public(address: str) -> None:
+    assert netguard.is_public_address(address)
+
+
+def test_lookups_are_never_remembered(monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = iter([("93.184.216.34",), ("127.0.0.1",)])
+    monkeypatch.setattr(netguard, "resolve", lambda _host: next(answers))
+    assert not is_local_host("rebind.example")
+    assert is_local_host("rebind.example")  # the second answer is looked at, not a cached first
+
+
 def test_names_that_resolve_to_private_addresses_are_local(monkeypatch: pytest.MonkeyPatch) -> None:
     table = {
         "rebind.example": ("10.1.2.3",),
@@ -59,6 +86,13 @@ def test_check_public_url() -> None:
     ):
         with pytest.raises(UrlRefused, match="not a web address"):
             check_public_url(bad)
+    for malformed in (
+        "http://[::1",
+        "http://example.com:notaport/x",
+        "https://exa mple.com:99999/",
+    ):
+        with pytest.raises(UrlRefused):
+            check_public_url(malformed)
     with pytest.raises(UrlRefused, match="local or private"):
         check_public_url("http://169.254.169.254/latest/meta-data/")
     with pytest.raises(UrlRefused, match="not https"):

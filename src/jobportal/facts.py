@@ -16,31 +16,64 @@ from typing import Any
 
 from jobportal.text import find_terms
 
+#: Longer descriptions are cut here before any pattern runs.
+MAX_TEXT_CHARS = 120_000
+_SPACES_RE = re.compile(r"[^\S\n]+")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+_CLAUSE_SPLIT_RE = re.compile(r"[,;:()]|\band\b|\bbut\b|\bhowever\b", re.IGNORECASE)
+
+# Matched against text whose whitespace is all single spaces, with single
+# optional spaces between the parts: nothing here can be made to backtrack.
 _YEARS_RE = re.compile(
-    r"(?<![\d.$])(\d{1,2})\s*(?:\+|plus\b|or more\b)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*)?\+?\s*"
-    r"(?:years?|yrs?)\b['’]?\s*(?:of\s+)?(?:[a-z/,&\-]+\s+){0,5}?experience",
+    r"(?<![\d.$])(\d{1,2}) ?(?:\+|plus\b|or more\b)? ?(?:(?:-|–|to) ?\d{1,2} ?)?\+? ?"
+    r"(?:years?|yrs?)\b['’]? ?(?:of )?(?:[a-z/,&\-]+ ){0,5}?experience",
     re.IGNORECASE,
 )
 _MIN_YEARS_RE = re.compile(
-    r"(?:minimum|min\.?|at least)\s+(?:of\s+)?(\d{1,2})\+?\s*(?:years?|yrs?)\b", re.IGNORECASE
+    r"(?:minimum|min\.?|at least) (?:of )?(\d{1,2})\+? ?(?:years?|yrs?)\b", re.IGNORECASE
 )
 
-_CLEARANCE_WORDS = (
-    r"(?:security clearance|secret clearance|ts/sci|top secret|public trust|clearance)"
-)
-_CLEARANCE_OBTAIN_RE = re.compile(
-    rf"\b(?:ability|able|eligible|eligibility|willing(?:ness)?)\s+to\s+(?:obtain|get|acquire)\b[^.\n]{{0,60}}{_CLEARANCE_WORDS}",
+# ---- clearance -----------------------------------------------------------
+# A sentence is about a security clearance when it names one outright, or
+# says "clearance" next to something that makes it a government one. The
+# word alone is not enough: "clearance of a background check" is not one.
+_CLEARANCE_TERM_RE = re.compile(
+    r"\bsecurity clearance\b|\bsecret(?: level)? clearance\b|\btop secret\b|\bts ?/ ?sci\b"
+    r"|\bpublic trust\b|\bpolygraph\b"
+    r"|\b(?:dod|government|federal|u\.?s\.? government|interim|active|current|existing)\b"
+    r"[^.\n]{0,30}\bclearance\b"
+    r"|\bclearance\b[^.\n]{0,30}\b(?:dod|government|federal|polygraph|sci)\b",
     re.IGNORECASE,
 )
-_CLEARANCE_REQUIRED_RE = re.compile(
-    rf"\b(?:active|current|existing)\b[^.\n]{{0,40}}{_CLEARANCE_WORDS}"
-    rf"|{_CLEARANCE_WORDS}\s+(?:is\s+)?(?:required|needed|mandatory)\b"
-    rf"|\b(?:must|required to)\s+(?:have|hold|possess|maintain)\b[^.\n]{{0,50}}{_CLEARANCE_WORDS}"
-    rf"|\brequires?\b[^.\n]{{0,40}}{_CLEARANCE_WORDS}",
+_NOT_SECURITY_RE = re.compile(
+    r"\bclearance (?:of|from) (?:a |an |the )?(?:background|medical|drug|customs|credit|reference)"
+    r"|\b(?:background|medical|drug|customs|credit) (?:check |screen(?:ing)? )?clearance\b",
     re.IGNORECASE,
+)
+_OPTIONAL_RE = re.compile(
+    r"\bpreferred\b|\ba plus\b|\bnice to have\b|\bdesir(?:ed|able)\b|\bencouraged\b|\bbonus\b"
+    r"|\bhelpful\b|\badvantage\w*\b|\bideally\b|\boptional\b|\bwelcome\b|\bbeneficial\b",
+    re.IGNORECASE,
+)
+_NEGATED_RE = re.compile(
+    r"\bno\b|\bnot\b|n['’]t\b|\bwithout\b|\bnever\b|\bneither\b|\bnor\b", re.IGNORECASE
+)
+_OBTAIN_RE = re.compile(
+    r"\b(?:ability|able|eligible|eligibility|willing(?:ness)?)\s+to\s+"
+    r"(?:obtain|get|acquire|secure|receive|be granted)\b"
+    r"|\b(?:obtain|acquire)(?:ing)?\b[^.\n]{0,30}\bclearance\b",
+    re.IGNORECASE,
+)
+_REQUIRED_RE = re.compile(
+    r"\brequired?\b|\brequires\b|\bmust\b|\bmandatory\b|\bnecessary\b|\bessential\b|\bneed(?:ed|s)?\b",
+    re.IGNORECASE,
+)
+# A list item that is nothing but the clearance: "Active TS/SCI clearance".
+_BARE_CLEARANCE_RE = re.compile(
+    r"[-*•\s]*(?:an? )?(?:active|current|existing)\b.{0,40}\bclearance\b.{0,25}", re.IGNORECASE
 )
 _CLEARANCE_LEVELS = [
-    ("TS/SCI", re.compile(r"\bts\s?/\s?sci\b", re.IGNORECASE)),
+    ("TS/SCI", re.compile(r"\bts ?/ ?sci\b", re.IGNORECASE)),
     ("Top Secret", re.compile(r"\btop secret\b", re.IGNORECASE)),
     (
         "Secret",
@@ -49,26 +82,51 @@ _CLEARANCE_LEVELS = [
     ("Public Trust", re.compile(r"\bpublic trust\b", re.IGNORECASE)),
 ]
 
-_NO_SPONSORSHIP_RE = re.compile(
-    r"\b(?:unable|not able|cannot|can not|can't|will not|won't|do not|does not|don't|doesn't|no|not)\b"
-    r"[^.\n]{0,60}\bsponsor(?:ship|ing)?\b"
-    r"|\bwithout\b[^.\n]{0,30}\bsponsorship\b"
-    r"|\bsponsorship\b[^.\n]{0,30}\b(?:is|are)\s+not\s+(?:available|offered|provided)\b",
+# ---- sponsorship ---------------------------------------------------------
+_SPONSOR_WORD_RE = re.compile(r"\bsponsor(?:ship|ing|s|ed)?\b", re.IGNORECASE)
+_SPONSOR_NEGATED_RE = re.compile(
+    r"\b(?:unable|cannot|can not|can['’]t|won['’]t|don['’]t|doesn['’]t|no|not|never|without)\b",
     re.IGNORECASE,
 )
-_SPONSORSHIP_RE = re.compile(
-    r"\bsponsorship\b[^.\n]{0,20}\b(?:is\s+)?(?:available|offered|provided)\b"
-    r"|\b(?:we|will|can|do)\s+sponsor\b",
+_SPONSOR_OFFERED_RE = re.compile(
+    r"\bsponsorship\b[^.\n]{0,25}\b(?:available|offered|provided|possible)\b"
+    r"|\b(?:we|will|can|do|does|may)\s+(?:also\s+)?sponsor\b"
+    r"|\b(?:offers?|provides?)\s+(?:visa\s+|h-?1b\s+)?sponsorship\b",
     re.IGNORECASE,
 )
 
-_TRAVEL_RE = re.compile(
-    r"(\d{1,3})\s?%\s*(?:of\s+(?:the\s+)?time\s+)?(?:\w+\s+){0,3}?travel"
-    r"|travel\b[^.%\n]{0,50}?(\d{1,3})\s?%",
+# ---- travel --------------------------------------------------------------
+_TRAVEL_KIND = (
+    r"(?:(?:domestic|international|overnight|business|regional|local|global|required|expected|"
+    r"occasional|client|customer|work[- ]related) )"
+)
+_TRAVEL_BEFORE_RE = re.compile(
+    rf"(?<![\d.])(\d{{1,3}}) ?% ?(?:of (?:the )?time )?(?:(?:of|for|in) )?{_TRAVEL_KIND}*travel\b"
+    r"(?! (?:costs?|expenses?|reimburs\w*|insurance|stipend|budget|allowance|booking|benefits?|industry|tech))",
+    re.IGNORECASE,
+)
+_TRAVEL_AFTER_RE = re.compile(
+    r"\btravel(?:l?ing)?\b(?: requirements?| required| percentage| expectations?)?:?"
+    r"([^.,;%\n]{0,40}?)(?<![\d.])(\d{1,3}) ?%",
+    re.IGNORECASE,
+)
+# Words that make the number after "travel" something other than travel time.
+_NOT_TRAVEL_RE = re.compile(
+    r"remote|paid|match|premium|uptime|cover|reimburs|cost|expens|insur|401|bonus|discount|"
+    r"salary|equity|booking|api|industry|budget|stipend",
     re.IGNORECASE,
 )
 _ONCALL_RE = re.compile(r"\bon[- ]call\b", re.IGNORECASE)
 _HYBRID_RE = re.compile(r"\bhybrid\b", re.IGNORECASE)
+# In running text "hybrid" is usually about clouds. Only wording about where
+# the work happens counts.
+_HYBRID_WORK_RE = re.compile(
+    r"\bhybrid (?:role|position|work(?:ing)?|schedule|arrangement|policy|remote|in[- ]office|office)\b"
+    r"|\b(?:this|the) (?:role|position|job) is hybrid\b"
+    r"|\bhybrid\b[^.\n]{0,30}\b(?:days? (?:a|per|each) week|in[- ]office|on[- ]?site|in[- ]person)\b"
+    r"|\b(?:\d|one|two|three|four) days? (?:a|per|each) week (?:in|at|from) (?:the |our )?office\b",
+    re.IGNORECASE,
+)
 _ONSITE_RE = re.compile(
     r"\b(?:on[- ]?site|in[- ]office|in[- ]person)\b[^.\n]{0,30}\b(?:\d\s+days|required|only|full[- ]time|role|position)\b"
     r"|\b(?:5|five)\s+days\b[^.\n]{0,20}\b(?:in|at)\s+(?:the\s+)?office\b",
@@ -101,32 +159,80 @@ CERTIFICATIONS = (
 
 
 def _years(text: str) -> int | None:
-    found = [int(m.group(1)) for m in _YEARS_RE.finditer(text)]
-    found += [int(m.group(1)) for m in _MIN_YEARS_RE.finditer(text)]
+    flat = " ".join(text.split())  # also across the hard line breaks of an email
+    found = [int(m.group(1)) for m in _YEARS_RE.finditer(flat)]
+    found += [int(m.group(1)) for m in _MIN_YEARS_RE.finditer(flat)]
     plausible = [years for years in found if 1 <= years <= 30]
     # The most demanding figure is the role's real bar ("12+ years, 5+ leading teams").
     return max(plausible) if plausible else None
 
 
+def _sentences(text: str) -> list[str]:
+    return [sentence.strip() for sentence in _SENTENCE_SPLIT_RE.split(text) if sentence.strip()]
+
+
 def _clearance(text: str) -> tuple[str | None, str | None]:
-    obtainable = _CLEARANCE_OBTAIN_RE.search(text)
-    remainder = _CLEARANCE_OBTAIN_RE.sub(
-        " ", text
-    )  # so "able to obtain" is not read as "must have"
-    required = _CLEARANCE_REQUIRED_RE.search(remainder)
+    """``("required" | "obtainable" | None, level)``.
+
+    Judged one sentence at a time. "Required" needs a sentence that is about a
+    security clearance and says it is needed, with nothing in it that turns
+    that around: no negation ("no clearance required"), nothing optional ("a
+    plus", "preferred", "encouraged to apply") and no "able to obtain".
+    """
+    required = obtainable = False
+    for sentence in _sentences(text):
+        if not _CLEARANCE_TERM_RE.search(sentence) or _NOT_SECURITY_RE.search(sentence):
+            continue
+        if _OBTAIN_RE.search(sentence):
+            obtainable = True
+            continue
+        if _OPTIONAL_RE.search(sentence) or _NEGATED_RE.search(sentence):
+            continue
+        short = len(sentence.split()) <= 8 and _BARE_CLEARANCE_RE.fullmatch(sentence)
+        if _REQUIRED_RE.search(sentence) or short:
+            required = True
     if not required and not obtainable:
         return None, None
     level = next((name for name, pattern in _CLEARANCE_LEVELS if pattern.search(text)), None)
     return ("required" if required else "obtainable"), level
 
 
+def _sponsorship(text: str) -> str | None:
+    """``"not_offered"``, ``"offered"`` or ``None``, judged clause by clause.
+
+    A "not" only counts in the clause that mentions sponsorship ("not an
+    entry-level role and sponsorship is available" offers it), and "with or
+    without sponsorship" says nothing either way.
+    """
+    offered = False
+    for sentence in _sentences(text):
+        if not _SPONSOR_WORD_RE.search(sentence):
+            continue
+        if re.search(r"\bwith or without\b", sentence, re.IGNORECASE):
+            continue
+        for clause in _CLAUSE_SPLIT_RE.split(sentence):
+            if not _SPONSOR_WORD_RE.search(clause):
+                continue
+            if _SPONSOR_NEGATED_RE.search(clause):
+                return "not_offered"
+            if _SPONSOR_OFFERED_RE.search(clause):
+                offered = True
+    return "offered" if offered else None
+
+
 def _travel(text: str) -> int | None:
-    values = [
-        int(group)
-        for match in _TRAVEL_RE.finditer(text)
-        for group in match.groups()
-        if group and int(group) <= 100
-    ]
+    """The share of time spent travelling, when the posting states one.
+
+    The number has to belong to "travel" itself: right before it ("25%
+    travel", "up to 20% international travel") or right after it on the same
+    line ("Travel: 10%"). "100% remote", benefit percentages and uptime
+    figures that merely sit near the word are not travel.
+    """
+    values = [int(match.group(1)) for match in _TRAVEL_BEFORE_RE.finditer(text)]
+    for match in _TRAVEL_AFTER_RE.finditer(text):
+        if not _NOT_TRAVEL_RE.search(match.group(1)):
+            values.append(int(match.group(2)))
+    values = [value for value in values if value <= 100]
     return max(values) if values else None
 
 
@@ -143,7 +249,7 @@ def workplace_of(
         return "hybrid"
     if remote:
         return "remote"
-    if _HYBRID_RE.search(description):
+    if _HYBRID_WORK_RE.search(description):
         return "hybrid"
     if remote is False or _ONSITE_RE.search(description):
         return "onsite"
@@ -158,7 +264,9 @@ def extract_facts(
     declared_workplace: str | None = None,
 ) -> dict[str, Any]:
     """Explicit facts in a posting. Keys are present only when the posting says so."""
-    text = description or ""
+    # All runs of spaces, tabs, form feeds and the like become one space
+    # (line breaks are kept): the patterns below then run in linear time.
+    text = _SPACES_RE.sub(" ", (description or "")[:MAX_TEXT_CHARS])
     facts: dict[str, Any] = {}
 
     years = _years(text)
@@ -171,10 +279,9 @@ def extract_facts(
         if level:
             facts["clearance_level"] = level
 
-    if _NO_SPONSORSHIP_RE.search(text):
-        facts["sponsorship"] = "not_offered"
-    elif _SPONSORSHIP_RE.search(text):
-        facts["sponsorship"] = "offered"
+    sponsorship = _sponsorship(text)
+    if sponsorship:
+        facts["sponsorship"] = sponsorship
 
     travel = _travel(text)
     if travel is not None:
