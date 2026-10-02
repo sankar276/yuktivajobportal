@@ -74,12 +74,12 @@ def _select_bullets(
     matched: list[str],
     emphasize: set[str],
 ) -> tuple[list[Bullet], list[Bullet]]:
-    """``(kept, left_out)`` for one role."""
+    """``(kept, left_out)`` for one role. A pinned bullet is kept whatever the budget."""
     eligible = [b for b in role.bullets if not b.variants or variant in b.variants]
-    if budget <= 0:
-        return [], eligible
     pinned = [b for b in eligible if b.pinned]
     others = [b for b in eligible if not b.pinned]
+    if budget <= 0:
+        return pinned, others
     order = {b.id: index for index, b in enumerate(eligible)}
     ranked = sorted(
         others,

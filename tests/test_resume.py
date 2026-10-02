@@ -59,6 +59,26 @@ def test_tailor_selects_relevant_bullets_within_budget(user_config: UserConfig) 
     assert "Northwind Systems: kept 6 of 9 bullets" in result.changes
 
 
+def test_a_pinned_bullet_survives_a_role_with_no_bullet_budget(user_config: UserConfig) -> None:
+    bank = user_config.resume.model_copy(deep=True)
+    # Every role after the first is listed without bullets.
+    bank.options.recent_roles = bank.options.detail_roles = 1
+    old_role = bank.experience[1]
+    old_role.bullets[0].pinned = True
+    result = tailor(bank, user_config.profile, title="Platform Architect", description="Kubernetes")
+    assert result.resume.experience[1].bullets == [old_role.bullets[0].text]
+    assert all(not role.bullets for role in result.resume.experience[2:])
+
+
+def test_gaps_are_not_read_out_of_ordinary_english(user_config: UserConfig) -> None:
+    posting = (
+        "Harness the power of data. You will spark new ideas, give a swift answer when "
+        "things are in flux, and work with our team in Hong Kong. Pulumi is a plus."
+    )
+    result = tailor(user_config.resume, user_config.profile, title="Architect", description=posting)
+    assert result.gaps == ["Pulumi"]
+
+
 def test_tailor_never_adds_anything_that_is_not_in_the_bank(user_config: UserConfig) -> None:
     result = tailor(
         user_config.resume,
@@ -195,6 +215,10 @@ def test_html_escapes_content(user_config: UserConfig) -> None:
 def test_resume_basename() -> None:
     assert resume_basename("Alex Example") == "Alex_Example_Resume"
     assert resume_basename("José O'Brien-Smith") == "Jose_O_Brien_Smith_Resume"
+    assert resume_basename("Ronald McDonald") == "Ronald_McDonald_Resume"  # capitals as written
+    assert resume_basename("李雷") == "李雷_Resume"  # another script is kept, not lost
+    assert resume_basename("Bjørn Åse") == "Bjørn_Ase_Resume"
+    assert resume_basename("") == "Resume"
 
 
 # ------------------------------------------------------------------- guard

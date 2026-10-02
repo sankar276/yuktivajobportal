@@ -39,6 +39,8 @@ class FeedFilters:
     commitment: str = ""
     posted: int | None = None  # days
     min_pay: int | None = None
+    #: The currency ``min_pay`` is in: pay advertised in another is not compared.
+    currency: str = "USD"
     q: str = ""
     sort: str = "score"
     page: int = 1
@@ -110,7 +112,16 @@ def _apply_filters(query: Any, filters: FeedFilters, now: datetime) -> Any:
         query = query.where(now - timedelta(days=filters.posted) <= EFFECTIVE_POSTED)
     if filters.min_pay:
         period = "hour" if filters.min_pay < 1000 else "year"
-        query = query.where(Job.comp_period == period, Job.comp_max >= filters.min_pay)
+        # The top of the range, or the only figure given when there is no range.
+        top = func.coalesce(Job.comp_max, Job.comp_min)
+        query = query.where(
+            Job.comp_period == period,
+            top >= filters.min_pay,
+            or_(
+                Job.comp_currency.is_(None),
+                func.upper(Job.comp_currency) == filters.currency.upper(),
+            ),
+        )
     if filters.q.strip():
         pattern = _like(filters.q.strip())
         query = query.where(

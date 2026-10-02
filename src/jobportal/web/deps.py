@@ -88,11 +88,15 @@ def make_day_filter(settings: Settings) -> Any:
 
 
 def pay(job: Job) -> str:
-    """'$210-265k a year' / '$95-110 an hour', or '' when the posting does not say."""
+    """'$210-265k a year' / '$95-110 an hour', or '' when the posting does not say.
+
+    The period is named only when it is known: an amount whose period was
+    not understood is shown bare, never passed off as a yearly figure.
+    """
     if job.comp_max is None and job.comp_min is None:
         return ""
     symbol = {"USD": "$", "EUR": "€", "GBP": "£", "CAD": "CA$", "AUD": "A$"}.get(
-        job.comp_currency or "USD", ""
+        (job.comp_currency or "USD").upper(), ""
     )
     hourly = job.comp_period == "hour"
 
@@ -107,7 +111,8 @@ def pay(job: Job) -> str:
     else:
         amount = f"{symbol}{short(high if high is not None else low or 0)}"
     code = "" if symbol else f" {job.comp_currency}"
-    return f"{amount}{code} {'an hour' if hourly else 'a year'}"
+    period = {"hour": " an hour", "year": " a year"}.get(job.comp_period or "", "")
+    return f"{amount}{code}{period}"
 
 
 def fact_chips(job: Job) -> list[str]:

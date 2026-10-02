@@ -122,6 +122,8 @@ def _salary(
             continue
         interval = str(component.get("interval") or "").upper()
         period = "hour" if "HOUR" in interval else ("year" if "YEAR" in interval else None)
+        if period is None:
+            continue  # monthly, daily, one-off: not comparable with a yearly or hourly floor
         return (
             float(low) if low is not None else None,
             float(high) if high is not None else None,

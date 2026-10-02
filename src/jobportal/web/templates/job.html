@@ -43,7 +43,15 @@
       <p class="soft small">Skips come from the rules in your <code>search.yaml</code> and profile. You can still apply.</p>
       {% else %}
       <p class="headline-score">{{ score.score | round | int }}</p>
-      <p class="soft">{{ "On the shortlist" if score.decision == "shortlist" else "Below the shortlist" }}{% if lane %} for {{ lane.name }}{% endif %}</p>
+      {% if score.decision == "shortlist" %}
+      <p class="soft">On the shortlist{% if lane %} for {{ lane.name }}{% endif %}</p>
+      {% elif score.breakdown.get("unsure") %}
+      <p class="soft">Kept off the shortlist{% if lane %} for {{ lane.name }}{% endif %} until you have looked: part of this posting could not be read. Nothing is prepared or sent for it unless you start it.</p>
+      {% elif score.breakdown.get("provisional") %}
+      <p class="soft">Not on the shortlist yet{% if lane %} for {{ lane.name }}{% endif %}: its description has not been read.</p>
+      {% else %}
+      <p class="soft">Below the shortlist{% if lane %} for {{ lane.name }}{% endif %}</p>
+      {% endif %}
       <table class="factors">
         <caption class="visually-hidden">How the score adds up</caption>
         {% for factor in score.breakdown.get("factors", []) %}

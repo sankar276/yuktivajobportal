@@ -89,6 +89,7 @@ def feed_page(
         commitment=commitment,
         posted=_int(posted),
         min_pay=_int(min_pay),
+        currency=(config.search.lane(lane) or config.search.lanes[0]).compensation.currency,
         q=q.strip()[:100],
         sort="newest" if sort == "newest" else "score",
         page=max(_int(page) or 1, 1),

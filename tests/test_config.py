@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from jobportal.config import (
     load_user_config,
 )
 from jobportal.resume.model import load_resume_bank
+from tests.conftest import CONFIG
 
 
 def _edit(path: Path, change) -> None:
@@ -98,3 +100,33 @@ def test_work_authorization_defaults_to_unanswered() -> None:
     profile = Profile(name="Sam Doe", email="sam@example.com")
     assert profile.work_authorization.authorized is None
     assert profile.work_authorization.needs_sponsorship is None
+
+
+def test_a_key_written_twice_is_an_error_not_a_silent_replacement(data_dir: Path) -> None:
+    path = data_dir / "search.yaml"
+    path.write_text(path.read_text() + "\nblocked_companies:\n  - Initech\n")
+    with pytest.raises(ConfigError, match="'blocked_companies' appears twice"):
+        load_search(data_dir)
+    # The same key in two different lanes is fine.
+    shutil.copy(CONFIG / "search.example.yaml", path)
+    assert len(load_search(data_dir).lanes) == 2
+
+
+def test_currency_is_a_three_letter_code_in_any_case(data_dir: Path) -> None:
+    path = data_dir / "search.yaml"
+    _edit(path, lambda d: d["lanes"][0]["compensation"].update(currency="usd"))
+    assert load_search(data_dir).lanes[0].compensation.currency == "USD"
+    _edit(path, lambda d: d["lanes"][0]["compensation"].update(currency="dollars"))
+    with pytest.raises(ConfigError, match="three-letter code"):
+        load_search(data_dir)
+
+
+@pytest.mark.parametrize("written", ["none", "None", "N/A", "no", None, False, " "])
+def test_saying_you_hold_no_clearance_means_none(data_dir: Path, written: object) -> None:
+    _edit(data_dir / "profile.yaml", lambda d: d.update(security_clearance=written))
+    assert load_profile(data_dir).security_clearance == ""
+
+
+def test_a_named_clearance_is_kept_as_written(data_dir: Path) -> None:
+    _edit(data_dir / "profile.yaml", lambda d: d.update(security_clearance="Top Secret"))
+    assert load_profile(data_dir).security_clearance == "Top Secret"

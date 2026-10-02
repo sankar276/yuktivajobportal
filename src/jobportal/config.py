@@ -122,6 +122,9 @@ class StandardAnswer(StrictModel):
         return value
 
 
+_NO_CLEARANCE = {"none", "no", "n/a", "na", "nil", "not applicable", "-", "false"}
+
+
 class Profile(StrictModel):
     name: str
     preferred_name: str = ""
@@ -134,7 +137,7 @@ class Profile(StrictModel):
     current_title: str = ""
     years_experience: int | None = None
     #: A clearance you hold ("Secret", "TS/SCI"). Empty = none, and postings
-    #: that require an active clearance are skipped.
+    #: that require an active clearance, or one above yours, are skipped.
     security_clearance: str = ""
     work_authorization: WorkAuthorization = Field(default_factory=WorkAuthorization)
     contract: ContractTerms = Field(default_factory=ContractTerms)
@@ -148,6 +151,16 @@ class Profile(StrictModel):
     def _valid_email(cls, value: str) -> str:
         if not EMAIL_RE.match(value):
             raise ValueError(f"not an email address: {value!r}")
+        return value
+
+    @field_validator("security_clearance", mode="before")
+    @classmethod
+    def _no_clearance(cls, value: Any) -> Any:
+        # "none", "n/a" and YAML's own `no` / `null` all mean you hold none.
+        if value is None or value is False:
+            return ""
+        if isinstance(value, str) and value.strip().lower() in _NO_CLEARANCE:
+            return ""
         return value
 
     @property
@@ -230,7 +243,16 @@ class Compensation(StrictModel):
     min_base: float | None = None
     #: Skip contract postings whose advertised hourly maximum is below this.
     min_hourly: float | None = None
+    #: The currency your floors are in. Pay advertised in another is not compared.
     currency: str = "USD"
+
+    @field_validator("currency")
+    @classmethod
+    def _currency_code(cls, value: str) -> str:
+        code = value.upper()
+        if not re.fullmatch(r"[A-Z]{3}", code):
+            raise ValueError(f"currency must be a three-letter code such as USD, not {value!r}")
+        return code
 
 
 class Weights(StrictModel):
@@ -309,7 +331,7 @@ class Policy(StrictModel):
     ledger_window_days: int = Field(default=180, ge=1)
     #: What counts as "fresh" in the feed.
     fresh_hours: int = Field(default=24, ge=1)
-    #: Never apply to postings older than this.
+    #: Nothing older than this is sent unattended. You can still apply by hand.
     max_job_age_days: int = Field(default=30, ge=1)
     #: How many shortlisted roles to prepare (resume + application) per run.
     prepare_per_run: int = Field(default=15, ge=0)
@@ -350,11 +372,32 @@ def _format_validation_error(path: Path, error: ValidationError) -> str:
     return "\n".join(lines)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """YAML keeps the last of two equal keys without a word. Here that is an error.
+
+    A second ``lanes:`` further down would otherwise replace the first, and
+    a second ``exclude:`` would quietly undo the one above it.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _value in node.value:
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"the key {key!r} appears twice", key_node.start_mark
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"{path} not found. Run `jobportal init` to create it from the example.")
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):

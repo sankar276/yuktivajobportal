@@ -540,7 +540,9 @@ def assist(
 
 @app.command()
 def worker(
-    crawl_minutes: Annotated[int, typer.Option(help="How often to re-read the sources.")] = 60,
+    crawl_minutes: Annotated[
+        int, typer.Option(min=5, help="How often to re-read the sources.")
+    ] = 60,
 ) -> None:
     """Run the background worker (crawl, prepare, send) until stopped."""
     from jobportal.worker import Worker
@@ -565,7 +567,7 @@ def serve(
         ),
     ] = True,
     crawl_minutes: Annotated[
-        int, typer.Option(help="How often the worker re-reads the sources.")
+        int, typer.Option(min=5, help="How often the worker re-reads the sources.")
     ] = 60,
 ) -> None:
     """Open the web app (and, by default, the background worker)."""

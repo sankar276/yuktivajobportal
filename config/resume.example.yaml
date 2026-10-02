@@ -115,7 +115,8 @@ extras:
       - Maintainer of an open-source Kubernetes operator for Vault configuration
 
 options:
-  recent_roles: 2                   # most recent roles get the larger bullet budget
+  # Roles are taken in the order you list them above (newest first); nothing is sorted by date.
+  recent_roles: 2                   # the first roles in the file get the larger bullet budget
   max_bullets_recent: 6
   max_bullets_older: 3
-  detail_roles: 5                   # roles beyond this are listed without bullets
+  detail_roles: 5                   # roles after this many are listed without bullets

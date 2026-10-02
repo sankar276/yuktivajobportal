@@ -155,15 +155,41 @@ _TITLE_ALIASES = {
 }
 
 
+# Technology names written with a dot, kept whole when a title is split up.
+_DOTTED_TERMS = (".net", "node.js", "vue.js", "next.js", "nuxt.js", "react.js", "asp.net")
+_RANKS = (
+    (re.compile(r"\b(?:assistant|associate|asst)\s+vp\b"), "avp"),
+    (re.compile(r"\b(?:senior|sr)\s+vp\b"), "svp"),
+    (re.compile(r"\bexecutive\s+vp\b"), "evp"),
+)
+
+
 def title_words(title: str | None) -> list[str]:
-    """Lower-cased, alias-expanded words of a job title."""
-    cleaned = _ascii_lower(title).replace("&", " and ")
-    cleaned = re.sub(r"\bvice[ -]president\b", "vp", cleaned)
+    """Lower-cased, alias-expanded words of a job title.
+
+    Titles are written every which way: "Sr.Staff", "Staff+", "V.P.",
+    "Architect\u2013Cloud". Anything that is not part of a word separates
+    words, and the common spellings of a rank become one token.
+    """
+    # Dashes of every kind are separators; folding to ASCII would delete them
+    # and glue their neighbours together.
+    spaced = re.sub(r"[\u2010-\u2015\u2212]", " ", title or "")
+    cleaned = _ascii_lower(spaced).replace("&", " and ")
+    for index, term in enumerate(_DOTTED_TERMS):
+        cleaned = cleaned.replace(term, f" dotted{index} ")
+    cleaned = re.sub(r"\b((?:[a-z]\.){2,})", lambda m: m.group(1).replace(".", ""), cleaned)  # v.p.
+    cleaned = re.sub(r"[^a-z0-9+#]+", " ", cleaned)
+    cleaned = re.sub(r"\bvice president\b", "vp", cleaned)
+    cleaned = re.sub(r"\bsr\b", "senior", cleaned)
+    for pattern, rank in _RANKS:
+        cleaned = pattern.sub(rank, cleaned)
     cleaned = re.sub(r"\bhead of\b", "head", cleaned)
-    cleaned = re.sub(r"[^a-z0-9+#.]+", " ", cleaned)
     words = []
     for word in cleaned.split():
-        word = word.strip(".")
+        if word.startswith("dotted") and word[6:].isdigit():
+            word = _DOTTED_TERMS[int(word[6:])]
+        elif word.endswith("+") and not word.endswith("++"):
+            word = word.rstrip("+")  # "Staff+"
         if word:
             words.append(_TITLE_ALIASES.get(word, word))
     return words
@@ -215,6 +241,9 @@ ALIASES: dict[str, str] = {
     "continuous integration": "cicd",
     "continuous delivery": "cicd",
     "golang": "go",
+    "asp.net": ".net",
+    "dotnet": ".net",
+    "dot net": ".net",
     "node.js": "nodejs",
     "postgres": "postgresql",
     "open policy agent": "opa",
@@ -237,8 +266,43 @@ ALIASES: dict[str, str] = {
     "infrastructure automation": "iac",
 }
 
-# Terms that are also ordinary English words need an exact-case match.
-_CASE_SENSITIVE = {"go": "Go", "r": "R", "c": "C", "rust": "Rust", "swift": "Swift"}
+# Terms that are also ordinary English words or letters. Written in the case
+# given here they count where a skill would stand: in a list, or after "in",
+# "with", "using". In lower case they count only between list separators
+# ("python, go, rust"), never in running text.
+_AMBIGUOUS = {"go": ("Go", "GO"), "r": ("R",), "c": ("C",), "rust": ("Rust",), "swift": ("Swift",)}
+# Tool names that are also English words ("at the helm", "harness the power",
+# "Hong Kong"). Capitalised inside a sentence they are the tool. In lower case,
+# or where a sentence starts, they count only where a skill would stand.
+_WORDLIKE = frozenset(
+    {"helm", "vault", "flux", "harness", "spark", "chef", "puppet", "envoy", "nomad", "consul",
+     "salt", "kong", "packer", "rancher"}
+)  # fmt: skip
+#: The ones that open a sentence as a verb: "Harness the power of data".
+_VERBS = frozenset({"harness", "spark"})
+_BULLETS = ("-", "*", "\u2022", "\u00b7")
+_SKILL_BEFORE_RE = re.compile(
+    r"(?:(?:^|[\s(])(?:in|with|using|and|or|of|like|plus|both|either)\s+|[,/(|:;\u2022\u00b7]\s*)$",
+    re.IGNORECASE,
+)
+_WITH_BEFORE_RE = re.compile(r"(?:^|[\s(])(?:with|using)\s+$", re.IGNORECASE)
+_SKILL_AFTER_RE = re.compile(r"^\s*(?:[,/);|]|\band\b|\bor\b|$|\(|\d)", re.IGNORECASE)
+# What follows makes it an ordinary word after all: "Go-live", "Go to", "R&D",
+# "C-suite", "Salt Lake City".
+_WORD_AFTER_RE = re.compile(
+    r"^(?:[-/]\w|\s*&|\s+(?:to|above|beyond|live|ahead|big|forward|further|back|home|public"
+    r"|green|no[- ]go|us|lake)\b)",
+    re.IGNORECASE,
+)
+_LIST_BEFORE_RE = re.compile(r"(?:[,/(|\u2022\u00b7]\s*|^\s*[-*]\s*)$")
+_LIST_AFTER_RE = re.compile(r"^\s*(?:[,/)|]|$)")
+# What precedes makes it a label or part of a name, not a skill: "Series C",
+# "Toys R Us", "Hong Kong", "Head Chef".
+_LABEL_BEFORE_RE = re.compile(
+    r"(?:series|class|grade|vitamin|plan|phase|appendix|section|type|level|tier|round|toys|"
+    r"objective|let['\u2019]s|lets|to|we|you|they|i|hong|king|head|sous|pastry|digital)[\s-]*$",
+    re.IGNORECASE,
+)
 
 
 def canonical(term: str) -> str:
@@ -246,33 +310,126 @@ def canonical(term: str) -> str:
     return ALIASES.get(lowered, lowered)
 
 
+def _spelling_pattern(spelling: str) -> str:
+    """One spelling as a pattern: flexible about separators, "&" for "and", "SOC2" for "SOC 2"."""
+    parts = spelling.split(" ")
+    pattern = re.escape(parts[0])
+    for part in parts[1:]:
+        if part == "and":
+            pattern += r"[\s\-/]*(?:and|&)"
+            continue
+        # A number may sit right against the word before it.
+        gap = r"[\s\-/]*" if part[:1].isdigit() else r"[\s\-/]+"
+        pattern += gap + re.escape(part)
+    return pattern
+
+
 @lru_cache(maxsize=4096)
-def _term_pattern(term: str) -> re.Pattern[str]:
+def _term_pattern(term: str) -> re.Pattern[str] | None:
+    """The ordinary spellings of a term (and its aliases) as one pattern."""
     lowered = squash(term).lower()
     spellings = {lowered} | {alias for alias, target in ALIASES.items() if target == lowered}
     if lowered in ALIASES:  # the term itself is an alias: also accept its canonical form
         target = ALIASES[lowered]
         spellings |= {target} | {alias for alias, t in ALIASES.items() if t == target}
-    parts = []
-    for spelling in sorted(spellings, key=len, reverse=True):
-        if spelling in _CASE_SENSITIVE:
-            exact = re.escape(_CASE_SENSITIVE[spelling])
-            # "Go" the language, not "Go to market"; "R" the language, not "R&D".
-            tail = {"go": r"(?![\s-]+to\b)", "r": r"(?!&)", "c": r"(?![-&])"}.get(spelling, "")
-            parts.append(f"(?-i:{exact}){tail}")
-        else:
-            escaped = re.escape(spelling).replace(r"\ ", r"[\s\-/]+")
-            parts.append(escaped)
+    parts = [
+        _spelling_pattern(spelling)
+        for spelling in sorted(spellings, key=len, reverse=True)
+        if spelling not in _AMBIGUOUS and spelling not in _WORDLIKE
+    ]
+    if not parts:
+        return None
     body = "|".join(parts)
     # \b does not work next to symbols (c++, .net, ci/cd); use explicit guards.
-    return re.compile(rf"(?<![A-Za-z0-9+#])(?:{body})(?![A-Za-z0-9+#])", re.IGNORECASE)
+    # A version number may follow directly: "C++17", "Java 21", "Python3".
+    return re.compile(rf"(?<![A-Za-z0-9+#])(?:{body})(?![A-Za-z+#])", re.IGNORECASE)
+
+
+def _ambiguous_names(term: str) -> tuple[str, ...]:
+    """The spellings of ``term`` that are also ordinary words ("go" for "golang")."""
+    lowered = squash(term).lower()
+    names = {lowered, ALIASES.get(lowered, lowered)}
+    names |= {alias for alias, target in ALIASES.items() if target in names}
+    return tuple(sorted(name for name in names if name in _AMBIGUOUS or name in _WORDLIKE))
+
+
+def _as_a_skill(text: str, name: str) -> bool:
+    """Is ``name`` ("go", "r", "helm") used in ``text`` the way a skill is named?"""
+    strict = name in _AMBIGUOUS
+    proper = _AMBIGUOUS.get(name) or (name.capitalize(),)
+    pattern = rf"(?<![A-Za-z0-9+#.]){re.escape(name)}(?![A-Za-z0-9+#])"
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        found = match.group(0)
+        before = text[max(0, match.start() - 14) : match.start()].split("\n")[-1]
+        after = text[match.end() : match.end() + 14].split("\n")[0]
+        if _WORD_AFTER_RE.match(after) or _LABEL_BEFORE_RE.search(before):
+            continue
+        listed = bool(_SKILL_AFTER_RE.match(after))
+        if found in proper:
+            if listed or _SKILL_BEFORE_RE.search(before):
+                return True
+            if strict:
+                continue
+            lead = before.strip()
+            if lead in _BULLETS:
+                if name not in _VERBS:
+                    return True  # "- Helm chart development"
+            elif lead and not lead.endswith((".", "!", "?")):
+                return True  # a capital inside a sentence: "Deploying Helm charts"
+        elif found.islower():
+            if _LIST_BEFORE_RE.search(before) and _LIST_AFTER_RE.match(after):
+                return True
+            if not strict and listed and _WITH_BEFORE_RE.search(before):
+                return True  # "experience with helm, kustomize"
+    return False
 
 
 def has_term(text: str, term: str) -> bool:
     """True when ``term`` (or a known alias) occurs in ``text`` as a whole term."""
     if not term.strip():
         return False
-    return bool(_term_pattern(term).search(text))
+    pattern = _term_pattern(term)
+    if pattern is not None and pattern.search(text):
+        return True
+    return any(_as_a_skill(text, name) for name in _ambiguous_names(term))
+
+
+_LINKING = r"(?:\s+(?:is|are|will be|would be|to be))?"
+_DENIAL_RE = re.compile(
+    r"\b(?:no|not|never|without|non|neither|nor|none)\b|n['\u2019]t\b", re.IGNORECASE
+)
+_CLAUSE_END_RE = re.compile(r"[.;:!?\n]")
+
+
+@lru_cache(maxsize=1024)
+def _stated_pattern(phrase: str) -> re.Pattern[str] | None:
+    """A phrase with room for "is"/"are" between its words: "relocation is required"."""
+    words = squash(phrase).lower().split(" ")
+    if len(words) < 2:
+        return None
+    body = (_LINKING + r"[\s\-/]+").join(re.escape(word) for word in words)
+    return re.compile(rf"(?<![A-Za-z0-9+#])(?:{body})(?![A-Za-z+#])", re.IGNORECASE)
+
+
+def states(text: str, phrase: str) -> bool:
+    """Does ``text`` say ``phrase`` outright, rather than deny it?
+
+    For rules of the form "skip a posting that says X". "Relocation is
+    required" says "relocation required"; "No relocation required" and
+    "relocation is not required" do not. A denial counts when it stands in
+    the same clause within the three words before the phrase.
+    """
+    if not phrase.strip():
+        return False
+    patterns = [p for p in (_term_pattern(phrase), _stated_pattern(phrase)) if p is not None]
+    if not patterns:
+        return has_term(text, phrase)
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            before = _CLAUSE_END_RE.split(text[max(0, match.start() - 60) : match.start()])[-1]
+            if not _DENIAL_RE.search(" ".join(before.split()[-3:])):
+                return True
+    return False
 
 
 def find_terms(text: str, terms: Iterable[str]) -> list[str]:

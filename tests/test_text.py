@@ -11,6 +11,7 @@ from jobportal.text import (
     phrase_in_title,
     question_key,
     slugify,
+    states,
     title_words,
     unescape_if_needed,
 )
@@ -62,6 +63,30 @@ def test_title_words_expand_abbreviations() -> None:
     assert title_words("Head of Platform") == ["head", "platform"]
 
 
+@pytest.mark.parametrize(
+    ("title", "words"),
+    [
+        ("Sr.Staff Platform Engineer", ["senior", "staff", "platform", "engineer"]),
+        ("Staff+ Platform Engineer", ["staff", "platform", "engineer"]),
+        ("V.P. Platform Engineering", ["vp", "platform", "engineering"]),
+        ("Vice-President, Platform", ["vp", "platform"]),
+        ("Senior Architect\u2013Cloud Platform", ["senior", "architect", "cloud", "platform"]),
+        ("Lead DevOps/SRE", ["lead", "devops", "sre"]),
+        ("Cloud Architect, Assistant Vice President", ["cloud", "architect", "avp"]),
+        ("Asst. Vice President, Cloud", ["avp", "cloud"]),
+        ("Senior Vice President, Engineering", ["svp", "engineering"]),
+        ("Executive Vice President", ["evp"]),
+        # Names written with a symbol stay whole.
+        ("Senior .NET Developer", ["senior", ".net", "developer"]),
+        ("Node.js Developer", ["node.js", "developer"]),
+        ("C++ Engineer", ["c++", "engineer"]),
+        ("C# Developer", ["c#", "developer"]),
+    ],
+)
+def test_title_words_split_however_the_title_is_written(title: str, words: list[str]) -> None:
+    assert title_words(title) == words
+
+
 def test_phrase_in_title_is_order_free_and_whole_word() -> None:
     words = title_words("Principal Engineer, Cloud Platform")
     assert phrase_in_title("platform engineer", words)
@@ -97,10 +122,62 @@ def test_fingerprint_same_role_across_locations() -> None:
         ("Terraform, Ansible", "terraform", True),
         ("zero-trust networking", "Zero trust", True),
         ("", "AWS", False),
+        # "Go", "R" and "C" are also words and letters: they count where a skill stands.
+        ("Go above and beyond", "Go", False),
+        ("Let's Go!", "Go", False),
+        ("Go-live support", "Go", False),
+        ("Go/No-Go decisions", "Go", False),
+        ("We go the extra mile", "Go", False),
+        ("ready to go, willing to learn", "Go", False),
+        ("Python, GO, Rust", "Go", True),
+        ("python, go, rust", "Go", True),  # lower case only inside a list
+        ("Operators in Go.", "Go", True),
+        ("Experience with Go", "Golang", True),
+        ("Toys R Us", "R", False),
+        ("R & D", "R", False),
+        ("Python, R, SQL", "R", True),
+        ("Statistics in R", "R", True),
+        ("Series C funding", "C", False),
+        ("Objective-C", "C", False),
+        ("C-suite stakeholders", "C", False),
+        ("C, C++ and Rust", "C", True),
+        ("a swift response", "Swift", False),
+        ("iOS (Swift)", "Swift", True),
+        # Versions, symbols and joined spellings.
+        ("C++17 and later", "C++", True),
+        ("Java 21", "Java", True),
+        ("Python3", "Python", True),
+        ("ASP.NET Core", ".NET", True),
+        ("identity & access management", "identity and access management", True),
+        ("SOC2 compliance", "SOC 2", True),
+        ("NoSQL stores", "SQL", False),
     ],
 )
 def test_has_term(text: str, term: str, expected: bool) -> None:
     assert has_term(text, term) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "phrase", "expected"),
+    [
+        ("Relocation required", "relocation required", True),
+        ("Relocation is required.", "relocation required", True),
+        ("Relocation will be required", "relocation required", True),
+        ("No relocation required.", "relocation required", False),
+        ("Relocation is not required", "relocation required", False),
+        ("There isn't any relocation required", "relocation required", False),
+        ("no travel or relocation required", "relocation required", False),
+        # A denial in another clause, or well before the phrase, is about something else.
+        ("We do not sponsor visas; relocation required", "relocation required", True),
+        ("We do not offer sponsorship and relocation is required", "relocation required", True),
+        ("Active security clearance", "security clearance", True),
+        ("No security clearance needed", "security clearance", False),
+        ("k8s on-call", "kubernetes", True),  # aliases still apply
+        ("anything", "", False),
+    ],
+)
+def test_states_is_said_not_denied(text: str, phrase: str, expected: bool) -> None:
+    assert states(text, phrase) is expected
 
 
 def test_find_terms_dedupes_aliases_and_keeps_order() -> None:

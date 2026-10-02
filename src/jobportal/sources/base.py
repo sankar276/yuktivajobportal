@@ -157,7 +157,7 @@ def parse_employment(value: str | None) -> str | None:
     return None
 
 
-_REMOTE_WORDS_RE = re.compile(
+REMOTE_WORDS_RE = re.compile(
     r"\bremote\b|\bvirtual\b|\btelecommut\w*|\bwork(?:ing)? from home\b|\bwfh\b"
     r"|\bhome[- ]?based\b|\bhome office\b|\banywhere\b|\bnationwide\b",
     re.IGNORECASE,
@@ -179,12 +179,12 @@ def infer_remote(location: str | None, workplace_type: str | None = None) -> boo
     if workplace:
         if _PLACE_BOUND_RE.search(workplace):
             return False
-        if _REMOTE_WORDS_RE.search(workplace):
+        if REMOTE_WORDS_RE.search(workplace):
             return True
     text = location or ""
     if not text.strip():
         return None
-    if _REMOTE_WORDS_RE.search(text):
+    if REMOTE_WORDS_RE.search(text):
         return True
     if _PLACE_BOUND_RE.search(text):
         return False

@@ -390,6 +390,35 @@ def test_ashby_declared_workplace_outranks_the_remote_flag() -> None:
     assert remote is not None and remote.remote is True
 
 
+def test_pay_with_a_period_that_cannot_be_compared_is_left_out() -> None:
+    """A monthly range must not be stored as if it were a yearly one."""
+    from jobportal.sources.ashby import AshbyAdapter
+    from jobportal.sources.lever import LeverAdapter
+
+    lever = SourceRef(id=1, kind="lever", token="globex", company_name="Globex")
+    posting = {
+        "id": "abc", "text": "Platform Architect", "hostedUrl": "https://jobs.lever.co/globex/abc",
+        "salaryRange": {"min": 8000, "max": 10000, "currency": "USD", "interval": "per-month-salary"},
+    }  # fmt: skip
+    monthly = LeverAdapter()._job(posting, lever)
+    assert monthly is not None
+    assert (monthly.comp_min, monthly.comp_max, monthly.comp_period) == (None, None, None)
+    posting["salaryRange"]["interval"] = "per-year-salary"
+    yearly = LeverAdapter()._job(posting, lever)
+    assert yearly is not None and (yearly.comp_max, yearly.comp_period) == (10000.0, "year")
+
+    ashby = SourceRef(id=2, kind="ashby", token="acme", company_name="Acme")
+    item = {
+        "id": "1", "title": "Platform Architect", "location": "Remote",
+        "compensation": {"summaryComponents": [
+            {"compensationType": "Salary", "interval": "1 MONTH", "minValue": 8000,
+             "maxValue": 10000, "currencyCode": "USD"},
+        ]},
+    }  # fmt: skip
+    job = AshbyAdapter()._job(item, ashby)
+    assert job is not None and (job.comp_min, job.comp_max, job.comp_period) == (None, None, None)
+
+
 @pytest.mark.parametrize(
     ("title", "contract"),
     [

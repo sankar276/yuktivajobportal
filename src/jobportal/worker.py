@@ -33,6 +33,9 @@ from jobportal.pipeline import (
 from jobportal.settings import Settings, get_settings
 from jobportal.users import get_default_user
 
+#: The shortest interval between two readings of the boards.
+MIN_CRAWL_MINUTES = 5
+
 log = logging.getLogger(__name__)
 
 
@@ -49,7 +52,8 @@ class Worker:
         self.settings = settings or get_settings()
         self._browser_factory = browser_factory or (lambda: LazyBrowser(self.settings))
         self._client_factory = client_factory or (lambda: PoliteClient(self.settings))
-        self.crawl_every = timedelta(minutes=crawl_minutes)
+        # Never more often than this, whatever is asked: the boards are other people's.
+        self.crawl_every = timedelta(minutes=max(MIN_CRAWL_MINUTES, crawl_minutes))
         self.tick_seconds = tick_seconds
         self.stop_event = threading.Event()
         self._crawl_requested = threading.Event()

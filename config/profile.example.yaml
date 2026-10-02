@@ -21,7 +21,10 @@ links:
 current_company: Northwind Systems
 current_title: Principal Platform Engineer
 years_experience: 15
-security_clearance: ""        # e.g. "Secret". Empty = none: clearance-required postings are skipped
+# A clearance you hold: "Public Trust", "Secret", "Top Secret" or "TS/SCI".
+# Empty = none. Postings that require an active clearance you do not hold, or
+# one above yours, are skipped.
+security_clearance: ""
 
 # The two questions nearly every US application asks. They are never guessed:
 # leave them as `null` and any application that requires them waits for you.

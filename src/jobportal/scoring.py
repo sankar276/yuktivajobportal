@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,7 +22,15 @@ from sqlalchemy.orm import Session
 from jobportal.config import Employment, Lane, Profile, SearchConfig, Seniority
 from jobportal.db import utcnow
 from jobportal.models import Decision, Job, JobScore
-from jobportal.text import company_key, find_terms, phrase_in_title, sha256_text, title_words
+from jobportal.sources.base import REMOTE_WORDS_RE, infer_remote
+from jobportal.text import (
+    company_key,
+    find_terms,
+    phrase_in_title,
+    sha256_text,
+    states,
+    title_words,
+)
 
 RESCORE_AFTER = timedelta(hours=12)
 
@@ -62,6 +71,9 @@ class LaneResult:
     score: float = 0.0
     skip: str = ""  # the rule that ruled the job out; empty when it was scored
     provisional: bool = False
+    #: Something about the posting could not be read, so it waits for you
+    #: instead of being shortlisted on its own.
+    unsure: bool = False
     factors: list[Factor] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     core_found: list[str] = field(default_factory=list)
@@ -88,45 +100,80 @@ _JUNIOR = {
     "graduate",
     "trainee",
     "apprentice",
-    "avp",
 }
 _EXECUTIVE = {"cto", "cio", "ciso", "ceo", "coo", "cfo", "cpo", "svp", "evp", "president"}
-_CHIEF_IC = {"architect", "engineer", "scientist", "staff", "technologist"}
+#: Words that make a title an individual contributor's, whatever rank is attached.
+_IC_ROLES = {
+    "architect", "engineer", "developer", "scientist", "analyst", "administrator", "specialist",
+    "consultant", "sre", "designer", "programmer", "technologist", "researcher", "technician",
+}  # fmt: skip
 _LEVEL_NUMBERS = {"1": Seniority.junior, "2": Seniority.mid, "3": Seniority.senior,
                   "4": Seniority.staff, "5": Seniority.principal}  # fmt: skip
+# "Manager" in these titles names the job, not a team that reports to it.
+_NOT_PEOPLE_MANAGERS = {
+    "account", "project", "product", "program", "programme", "office", "case", "community",
+    "marketing", "sales", "success", "relationship", "customer", "partner", "delivery",
+    "portfolio", "campaign", "content", "brand", "social", "territory", "category", "practice",
+    "property", "facilities", "event", "events",
+}  # fmt: skip
+# Where the role sits, not what level it is: "Architect, Office of the CTO".
+_CONTEXT_RE = re.compile(
+    r"\boffice of (?:the )?(?:cto|cio|ciso|ceo|coo|cfo|cpo)\b"
+    r"|\b(?:cto|cio|ciso|ceo|coo|cfo|cpo)(?:['\u2019]s)? (?:org|organi[sz]ation|office|team|group|staff)\b"
+    r"|\bmember of (?:the )?technical staff\b|\bchief of staff\b|\bsenior associate\b",
+    re.IGNORECASE,
+)
+_FIELD_EXEC_RE = re.compile(r"\bfield (?:cto|ciso|cio)\b", re.IGNORECASE)
+# "Head of Platform", "Head, Platform": runs a function. "Head Chef" does not.
+_HEAD_OF_RE = re.compile(r"\bhead\s*(?:of\b|,)", re.IGNORECASE)
 
 
 def infer_seniority(title: str) -> Seniority:
-    """Read a level off a job title. Titles vary by company, so this is a best guess."""
-    words = title_words(title)
+    """Read a level off a job title. Titles vary by company, so this is a best guess.
+
+    Two things keep the guess honest. An individual contributor's title
+    stays one whatever rank a bank appends to it ("Cloud Architect - AVP",
+    "Platform Architect, Vice President"). And words that say where a role
+    sits ("Office of the CTO", "CISO Org") are not read as its level.
+    """
+    if _FIELD_EXEC_RE.search(title):
+        return Seniority.principal  # a senior customer-facing engineer, not the C-suite
+    words = title_words(_CONTEXT_RE.sub(" ", title))
     present = set(words)
     senior = "senior" in present
+    ic = bool(present & _IC_ROLES)
 
-    if present & _EXECUTIVE:
-        return Seniority.executive
-    if "chief" in present:
-        # "Chief Architect" is a top individual contributor, not the C-suite.
-        return Seniority.director if present & _CHIEF_IC else Seniority.executive
-    if "vp" in present:
-        return Seniority.vp
-    if "director" in present or "head" in present:
+    if ic:
+        if "chief" in present:
+            return Seniority.director  # "Chief Architect": a top engineer, not the C-suite
+    else:
+        if present & _EXECUTIVE or "chief" in present:
+            return Seniority.executive
+        if "vp" in present:
+            return Seniority.vp
+        if "avp" in present:
+            return Seniority.senior
+    if "director" in present or _HEAD_OF_RE.search(title):
         return Seniority.director
     if present & {"principal", "distinguished", "fellow"}:
         return Seniority.principal
-    if "manager" in present:
+    if "manager" in present and not present & _NOT_PEOPLE_MANAGERS:
         return Seniority.principal if senior else Seniority.staff
     if "staff" in present or "lead" in present:
         return Seniority.principal if senior else Seniority.staff
+    numbered = next((_LEVEL_NUMBERS[word] for word in words if word in _LEVEL_NUMBERS), None)
     if "architect" in present:
-        if present & _JUNIOR:
+        if numbered is not None:
+            return max(numbered, Seniority.senior)  # "Architect II"
+        if present & _JUNIOR and not senior:
             return Seniority.mid
         return Seniority.principal if senior else Seniority.staff
+    if numbered is not None:
+        return max(numbered, Seniority.senior) if senior else numbered
     if senior:
         return Seniority.senior
     if present & _JUNIOR:
         return Seniority.junior
-    if words and words[-1] in _LEVEL_NUMBERS:
-        return _LEVEL_NUMBERS[words[-1]]
     return Seniority.mid
 
 
@@ -146,50 +193,221 @@ _US_STATES = {
     "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
 }  # fmt: skip
 _US_NAMES = {"us", "usa", "u.s.", "u.s.a.", "united states", "united states of america", "america"}
-# Two-letter codes are only trusted in upper case ("IN" the state vs "in" the word).
-_US_CODE_RE = re.compile(
-    r"(?<![A-Za-z])(?:"
-    + "|".join(sorted(set(_US_STATES.values()) | {"US", "USA"}))
-    + r")(?![A-Za-z])"
+_STATE_CODES = frozenset(_US_STATES.values())
+#: State codes that are also a country's code, or an ordinary word in capitals.
+#: Standing alone ("CA, Remote", "Remote OR Hybrid") they are not read as states.
+_UNSAFE_ALONE = frozenset(
+    {"CA", "IN", "DE", "CO", "IL", "AR", "ID", "MA", "PA", "MT", "TN", "MD", "AL", "AZ", "LA",
+     "ME", "MN", "OR", "OK", "HI"}
+)  # fmt: skip
+_BARE_STATE_RE = re.compile(
+    r"(?<![A-Za-z])(?:" + "|".join(sorted(_STATE_CODES - _UNSAFE_ALONE)) + r")(?![A-Za-z])"
 )
-_US_NAME_RE = re.compile(
-    r"\b(?:"
-    + "|".join(re.escape(n) for n in sorted(_US_STATES, key=len, reverse=True))
-    + r"|united states(?: of america)?|u\.s\.a?\.?)(?![A-Za-z])",
+#: A state name that, on its own, is more often the city.
+_CITY_STATES = {"new york", "washington"}
+_US_REGIONS = (
+    "new england", "pacific northwest", "midwest", "east coast", "west coast", "bay area",
+    "tri-state", "mountain west", "southeast", "southwest", "northeast", "mid-atlantic",
+)  # fmt: skip
+#: Large US cities that postings write without their state. Only names that
+#: are not also a well-known place abroad.
+_US_CITIES = (
+    "new york city", "nyc", "san francisco", "south san francisco", "los angeles", "seattle",
+    "boston", "chicago", "austin", "dallas", "houston", "denver", "atlanta", "miami",
+    "philadelphia", "phoenix", "san diego", "minneapolis", "detroit", "pittsburgh", "nashville",
+    "charlotte", "raleigh", "salt lake city", "las vegas", "sacramento", "palo alto",
+    "mountain view", "sunnyvale", "santa clara", "menlo park", "redmond", "bellevue", "kirkland",
+    "boulder", "cupertino", "irvine", "san antonio", "orlando", "tampa", "st louis", "st. louis",
+    "saint louis", "kansas city", "indianapolis", "cincinnati", "cleveland", "columbus",
+    "baltimore", "milwaukee", "oklahoma city", "new orleans", "honolulu", "fort worth", "plano",
+    "frisco", "irving", "round rock", "reston", "mclean", "herndon", "tysons", "bethesda",
+    "arlington", "ann arbor", "jersey city", "hoboken", "brooklyn", "manhattan", "oakland",
+    "berkeley", "fremont", "redwood city", "san mateo", "santa monica", "pasadena", "long beach",
+    "silicon valley", "scottsdale", "tempe", "chandler", "tucson", "albuquerque", "el paso",
+    "boise", "omaha", "tulsa", "louisville", "memphis", "jacksonville", "fort lauderdale",
+    "buffalo", "hartford", "stamford", "providence", "princeton", "wilmington", "alpharetta",
+    "portland", "madison", "provo", "lehi", "spokane", "tacoma", "des moines",
+)  # fmt: skip
+_US_CITY_RE = re.compile(
+    r"(?<![A-Za-z])(?:"
+    + "|".join(re.escape(city) for city in sorted(_US_CITIES, key=len, reverse=True))
+    + r")(?![A-Za-z])",
     re.IGNORECASE,
 )
+# The country itself, named outright, or a region it is part of ("North
+# America", "Americas"). "US" only in capitals ("us" is a word).
+_US_COUNTRY_RE = re.compile(
+    r"(?<![A-Za-z])(?:US|USA|AMER)(?![A-Za-z])"
+    r"|(?i:\bunited states(?: of america)?\b|\bu\.s\.a?\.?(?![A-Za-z])|\bamericas\b|\bnoram\b"
+    r"|\bamerica\b(?<!latin america)(?<!south america)(?<!central america))"
+)
+_US_STATE_NAME_RE = re.compile(
+    r"\b(?:state of\s+)?("
+    + "|".join(re.escape(n) for n in sorted([*_US_STATES, *_US_REGIONS], key=len, reverse=True))
+    + r")(?:\s+state)?\b",
+    re.IGNORECASE,
+)
+# "City, ST": a place name, a comma, a two-letter code in capitals.
+_CITY_CODE_RE = re.compile(r"([A-Za-z][A-Za-z .'\-]*?),\s*([A-Z]{2})(?![A-Za-z])")
+#: Cities outside the US whose "City, XX" form collides with a US state code,
+#: or whose name is also a US town, with the country they are in.
+_FOREIGN_CITIES: dict[str, set[str]] = {
+    "toronto": {"CA", "ON"}, "vancouver": {"CA", "BC"}, "montreal": {"CA", "QC"},
+    "ottawa": {"CA", "ON"}, "calgary": {"CA", "AB"}, "edmonton": {"CA", "AB"},
+    "winnipeg": {"CA", "MB"}, "halifax": {"CA", "NS"}, "waterloo": {"CA", "ON"},
+    "bangalore": {"IN"}, "bengaluru": {"IN"}, "hyderabad": {"IN"}, "pune": {"IN"},
+    "chennai": {"IN"}, "mumbai": {"IN"}, "gurgaon": {"IN"}, "gurugram": {"IN"}, "noida": {"IN"},
+    "delhi": {"IN"}, "new delhi": {"IN"}, "kolkata": {"IN"}, "ahmedabad": {"IN"},
+    "berlin": {"DE"}, "munich": {"DE"}, "hamburg": {"DE"}, "frankfurt": {"DE"},
+    "cologne": {"DE"}, "stuttgart": {"DE"}, "dusseldorf": {"DE"},
+    "bogota": {"CO"}, "medellin": {"CO"}, "cali": {"CO"},
+    "tel aviv": {"IL"}, "haifa": {"IL"}, "jerusalem": {"IL"}, "herzliya": {"IL"},
+    "tbilisi": {"GE", "GEORGIA"}, "batumi": {"GE", "GEORGIA"},
+    "buenos aires": {"AR"}, "cordoba": {"AR"}, "jakarta": {"ID"}, "casablanca": {"MA"},
+    "panama city": {"PA"}, "tunis": {"TN"}, "vientiane": {"LA"}, "baku": {"AZ"},
+    "tirana": {"AL"}, "chisinau": {"MD"}, "ulaanbaatar": {"MN"}, "valletta": {"MT"},
+}  # fmt: skip
 _ELSEWHERE = [
-    "Canada", "Mexico", "Brazil", "Argentina", "Colombia", "Chile", "Costa Rica", "LATAM",
-    "Latin America", "UK", "United Kingdom", "England", "Scotland", "Ireland", "Germany",
-    "France", "Spain", "Portugal", "Italy", "Netherlands", "Belgium", "Poland", "Romania",
-    "Sweden", "Norway", "Denmark", "Finland", "Switzerland", "Austria", "Czech", "Hungary",
-    "Bulgaria", "Serbia", "Croatia", "Greece", "Estonia", "Lithuania", "Latvia", "Ukraine",
-    "Turkey", "Israel", "UAE", "Saudi Arabia", "India", "Pakistan", "Sri Lanka", "Bangladesh",
-    "Singapore", "Japan", "China", "Hong Kong", "Taiwan", "Korea", "Philippines", "Vietnam",
-    "Indonesia", "Malaysia", "Thailand", "Australia", "New Zealand", "South Africa", "Nigeria",
-    "Kenya", "Egypt", "Europe", "European Union", "EU", "EMEA", "APAC", "APJ", "Asia",
-    "Africa", "Middle East", "London", "Dublin", "Berlin", "Munich", "Paris", "Amsterdam",
-    "Madrid", "Barcelona", "Lisbon", "Warsaw", "Stockholm", "Zurich", "Toronto", "Vancouver",
-    "Montreal", "Ontario", "Quebec", "British Columbia", "Alberta", "Bangalore", "Bengaluru",
-    "Hyderabad", "Pune", "Chennai", "Mumbai", "Gurgaon", "Noida", "Sydney", "Melbourne",
-    "Tokyo", "Tel Aviv", "Sao Paulo", "São Paulo",
+    "Canada", "Mexico", "Brazil", "Argentina", "Colombia", "Chile", "Peru", "Costa Rica",
+    "Uruguay", "Ecuador", "Venezuela", "Bolivia", "Guatemala", "Panama", "LATAM",
+    "Latin America", "South America", "Central America", "UK", "United Kingdom",
+    "Great Britain", "England", "Scotland", "Wales", "Ireland", "Germany", "France", "Spain",
+    "Portugal", "Italy", "Netherlands", "Belgium", "Luxembourg", "Poland", "Romania", "Sweden",
+    "Norway", "Denmark", "Finland", "Iceland", "Switzerland", "Austria", "Czech", "Czechia",
+    "Slovakia", "Slovenia", "Hungary", "Bulgaria", "Serbia", "Croatia", "Greece", "Cyprus",
+    "Malta", "Estonia", "Lithuania", "Latvia", "Ukraine", "Russia", "Belarus", "Kazakhstan",
+    "Armenia", "Turkey", "Israel", "UAE", "United Arab Emirates", "Saudi Arabia", "Qatar",
+    "Bahrain", "Kuwait", "India", "Pakistan", "Sri Lanka", "Bangladesh", "Nepal", "Singapore",
+    "Japan", "China", "Hong Kong", "Taiwan", "Korea", "Philippines", "Vietnam", "Indonesia",
+    "Malaysia", "Thailand", "Cambodia", "Australia", "New Zealand", "South Africa", "Nigeria",
+    "Kenya", "Ghana", "Ethiopia", "Egypt", "Morocco", "Tunisia", "Europe", "European Union",
+    "EU", "EMEA", "APAC", "APJ", "Asia", "Africa", "Middle East", "London", "Manchester",
+    "Edinburgh", "Glasgow", "Belfast", "Dublin", "Cork", "Berlin", "Munich", "Hamburg",
+    "Frankfurt", "Paris", "Amsterdam", "Rotterdam", "Brussels", "Madrid", "Barcelona",
+    "Lisbon", "Porto", "Rome", "Milan", "Warsaw", "Krakow", "Wroclaw", "Gdansk", "Prague",
+    "Vienna", "Budapest", "Bucharest", "Sofia", "Belgrade", "Zagreb", "Athens", "Tallinn",
+    "Vilnius", "Riga", "Kyiv", "Istanbul", "Ankara", "Copenhagen", "Oslo", "Stockholm",
+    "Helsinki", "Zurich", "Geneva", "Toronto", "Vancouver", "Montreal", "Ottawa", "Calgary",
+    "Edmonton", "Ontario", "Quebec", "British Columbia", "Alberta", "Manitoba", "Nova Scotia",
+    "Saskatchewan", "Bangalore", "Bengaluru", "Hyderabad", "Pune", "Chennai", "Mumbai",
+    "Gurgaon", "Gurugram", "Noida", "Delhi", "Kolkata", "Karachi", "Lahore", "Dhaka", "Colombo",
+    "Manila", "Cebu", "Kuala Lumpur", "Jakarta", "Bangkok", "Hanoi", "Ho Chi Minh", "Seoul",
+    "Shanghai", "Beijing", "Shenzhen", "Taipei", "Tokyo", "Osaka", "Sydney", "Melbourne",
+    "Brisbane", "Perth", "Auckland", "Wellington", "Tel Aviv", "Haifa", "Dubai", "Abu Dhabi",
+    "Riyadh", "Doha", "Cairo", "Lagos", "Nairobi", "Cape Town", "Johannesburg", "Sao Paulo",
+    "Rio de Janeiro", "Buenos Aires", "Bogota", "Medellin", "Lima", "Santiago", "Mexico City",
+    "Guadalajara", "Monterrey", "Tbilisi",
 ]  # fmt: skip
 _ELSEWHERE_RE = re.compile(
     r"(?<![A-Za-z])(?:"
     + "|".join(re.escape(place) for place in sorted(_ELSEWHERE, key=len, reverse=True))
     # Workday writes Canada as "CA, ON, Toronto": country code, then province.
     + r"|CA,\s*(?:ON|BC|QC|AB|MB|SK|NS|NB)"
-    + r")(?![A-Za-z])"
+    + r")(?![A-Za-z])",
+    re.IGNORECASE,
 )
-_SEGMENT_RE = re.compile(r"\s*(?:;|\||\n|\s+or\s+|\s+/\s+)\s*")
+_SEGMENT_RE = re.compile(r"\s*(?:;|\||\n|\s+(?i:or)\s+|\s+/\s+)\s*")
+# Words in a location that name no place at all. The joining words only in
+# lower case: "IN" and "OR" in capitals may be a country or a state.
+_NO_PLACE_RE = re.compile(
+    r"(?i:\b(?:multiple|various|several|many|all|other) (?:locations?|sites|offices|cities|countries)\b"
+    r"|\b\d+ locations?\b|\bglobal(?:ly)?\b|\bworldwide\b|\binternational\b|\bflexible\b"
+    r"|\bto be determined\b|\btbd\b|\bn/?a\b|\bany(?: ?where)?\b"
+    r"|\b(?:hybrid|on[- ]?site|in[- ]office|in[- ]person|optional|eligible|friendly|first|fully"
+    r"|only|based|role|position|options?|available|preferred|locations?|office|distributed|open"
+    r"|work|from|home)\b)"
+    r"|\b(?:and|or|the|in|within|of|to)\b"
+)
+
+
+class LocationFit(NamedTuple):
+    value: float  # 0..1
+    note: str
+    hard_fail: bool
+    #: The place could not be read. The job is scored, but a person should
+    #: look before anything is sent, so it is never shortlisted on its own.
+    unsure: bool = False
+
+
+class _UsEvidence(NamedTuple):
+    country: bool  # the country, named outright
+    state: bool  # a state or region, named on its own
+    city: bool  # "City, ST", or a large city written without its state
+    rest: str  # the text with everything read as American taken out
+
+    @property
+    def found(self) -> bool:
+        return self.country or self.state or self.city
+
+
+def _fold(text: str) -> str:
+    """Accents removed, so "Bogot\u00e1" and "Krak\u00f3w" meet the lists above."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
+def _us_evidence(segment: str) -> _UsEvidence:
+    """What in one place string says "United States".
+
+    Everything read as American is taken out of ``rest``, so that "New
+    Mexico", "Dublin, OH" and "Vancouver, WA" are not then found on the list
+    of places abroad. A two-letter code counts as a state in "City, ST" form,
+    unless the city is a known one abroad whose country has that code
+    ("Gurugram, IN", "Hamburg, DE"); standing alone it counts only when it
+    cannot be a country's code instead ("TX, Remote", but not "CA, Remote").
+    """
+    text = _fold(segment)
+    country = bool(_US_COUNTRY_RE.search(text))
+    rest = _US_COUNTRY_RE.sub(" ", text)
+    seen = {"state": False, "city": False}
+
+    def city_code(match: re.Match[str]) -> str:
+        code = match.group(2)
+        # "Remote - Austin, TX": the city is what follows the last dash.
+        city = re.split(r"\s[-\u2013]\s|[:(]", match.group(1))[-1].strip().lower()
+        if code not in _STATE_CODES or code in _FOREIGN_CITIES.get(city, ()):
+            return match.group(0)
+        if not city or REMOTE_WORDS_RE.fullmatch(city) or city.upper() in _STATE_CODES:
+            return match.group(0)  # "Remote, CA": no city in front of the code
+        seen["city"] = True
+        return " "
+
+    rest = _CITY_CODE_RE.sub(city_code, rest)
+
+    def state_name(match: re.Match[str]) -> str:
+        before = rest[: match.start()].rstrip(" ,").lower()
+        city = re.split(r"[,;]|\s[-\u2013]\s", before)[-1].strip()
+        name = match.group(1).lower()
+        if name.upper() in _FOREIGN_CITIES.get(city, ()):
+            return match.group(0)  # "Tbilisi, Georgia" is the country
+        alone = match.group(0).lower() == name
+        seen["city" if alone and name in _CITY_STATES else "state"] = True
+        return " "
+
+    rest = _US_STATE_NAME_RE.sub(state_name, rest)
+    if _BARE_STATE_RE.search(rest):
+        seen["state"] = True
+        rest = _BARE_STATE_RE.sub(" ", rest)
+    if _US_CITY_RE.search(rest):
+        seen["city"] = True
+        rest = _US_CITY_RE.sub(" ", rest)
+    return _UsEvidence(country, seen["state"], seen["city"], rest)
 
 
 def mentions_us(text: str) -> bool:
-    return bool(_US_CODE_RE.search(text) or _US_NAME_RE.search(text))
+    """Does a place string name the United States, one of its states or cities?"""
+    return _us_evidence(text).found
+
+
+def _with_state_codes(text: str) -> str:
+    """State names as their codes, so "Austin, Texas" and "Austin, TX" compare equal."""
+    return _US_STATE_NAME_RE.sub(
+        lambda m: _US_STATES.get(m.group(1).lower(), m.group(0)), _fold(text)
+    )
 
 
 def _place_in(place: str, text: str) -> bool:
     """Whole-word match; short all-caps places ("TX", "US") are case-sensitive."""
+    place, text = _with_state_codes(place), _with_state_codes(text)
     flags = 0 if (len(place) <= 3 and place.isupper()) else re.IGNORECASE
     return bool(re.search(rf"(?<![A-Za-z]){re.escape(place)}(?![A-Za-z])", text, flags))
 
@@ -200,68 +418,113 @@ def _wants_us(regions: list[str]) -> bool:
 
 def _segments(text: str) -> list[str]:
     """A posting often lists several places; each is judged on its own."""
-    return [part for part in _SEGMENT_RE.split(text) if part.strip()] or ([text] if text else [])
+    return [part for part in _SEGMENT_RE.split(text) if part.strip()]
+
+
+def _foreign_city(text: str) -> bool:
+    return any(
+        match.group(2) in _FOREIGN_CITIES.get(match.group(1).strip().lower(), ())
+        for match in _CITY_CODE_RE.finditer(text)
+    )
+
+
+def _abroad(text: str) -> bool:
+    """Does ``text`` (already folded) name a place outside the United States?"""
+    return bool(_ELSEWHERE_RE.search(text)) or _foreign_city(text)
+
+
+def _named_place(text: str) -> str:
+    """What is left of a location once the words that name no place are removed."""
+    rest = _NO_PLACE_RE.sub(" ", REMOTE_WORDS_RE.sub(" ", text))
+    return re.sub(r"[^A-Za-z]+", " ", rest).strip()
 
 
 def _region_fit(segment: str, regions: list[str]) -> str:
-    """``yes`` / ``no`` / ``unknown``: is this place inside the regions you accept?"""
-    elsewhere = _ELSEWHERE_RE.search(segment)
-    inside = any(_place_in(region, segment) for region in regions) or (
-        _wants_us(regions) and mentions_us(segment)
-    )
-    if inside and not elsewhere:
+    """Is this place inside the regions you accept?
+
+    ``yes`` or ``no`` when the place could be read; ``unstated`` when the
+    segment names no place at all ("Remote"); ``unknown`` when it names one
+    that could not be placed. A region you accept wins over any other named
+    next to it: "US & Canada" is open to the US.
+    """
+    us = _us_evidence(segment)
+    if us.found and _wants_us(regions):
         return "yes"
-    return "no" if elsewhere else "unknown"
+    if any(_place_in(region, segment) for region in regions):
+        return "yes"
+    if us.found or _abroad(us.rest):
+        return "no"
+    return "unknown" if _named_place(us.rest) else "unstated"
 
 
 def _is_countrywide(segment: str, regions: list[str]) -> bool:
-    """The whole location is just a country or region you accept ("United States")."""
-    bare = re.sub(r"[^a-z. ]+", " ", segment.lower()).strip()
+    """The whole location is a country, state or region you accept, with no city in it.
+
+    "United States", "Texas, United States", "California": usually remote
+    within that area rather than a desk in a particular town.
+    """
     names = {region.strip().lower() for region in regions}
-    if _wants_us(regions):
-        names |= _US_NAMES
-    return bare in names
+    if re.sub(r"[^a-z. ]+", " ", segment.lower()).strip() in names:
+        return True
+    if not _wants_us(regions):
+        return False
+    us = _us_evidence(segment)
+    return (us.country or us.state) and not us.city and not _named_place(us.rest)
 
 
-def judge_location(job: Scorable, lane: Lane) -> tuple[float, str, bool]:
-    """``(value, note, hard_fail)`` for how the job's location fits the lane."""
+def judge_location(job: Scorable, lane: Lane) -> LocationFit:
+    """How the job's location fits the lane.
+
+    Only a place that was recognised, and is not one of yours, is a reason to
+    skip. A place that could not be read is scored as unknown and marked
+    ``unsure``, which keeps the job off the shortlist until you have looked.
+    """
     rules = lane.locations
     text = job.location or ""
     shown = f" ({text})" if text else ""
     onsite_hit = next((place for place in rules.onsite if _place_in(place, text)), None)
+    remote = job.remote
+    if remote is None and infer_remote(text):
+        remote = True  # "Virtual - US", "Home Based", "Nationwide"
 
-    if job.remote:
+    if remote:
         if not rules.remote:
             if onsite_hit:
-                return 1.0, f"Remote role, and {onsite_hit} is on your list", False
-            return 0.0, "Remote role; this lane is on-site only", True
+                return LocationFit(1.0, f"Remote role, and {onsite_hit} is on your list", False)
+            return LocationFit(0.0, "Remote role; this lane is on-site only", True)
         if not rules.remote_regions:
-            return 1.0, f"Remote{shown}", False
+            return LocationFit(1.0, f"Remote{shown}", False)
         fits = [_region_fit(segment, rules.remote_regions) for segment in _segments(text)]
         if "yes" in fits:
-            return 1.0, f"Remote{shown}", False
+            return LocationFit(1.0, f"Remote{shown}", False)
         if onsite_hit:
-            return 1.0, f"Remote or {onsite_hit}{shown}", False
-        if not fits or "unknown" in fits:
-            return 0.9, f"Remote; region not stated{shown}", False
-        return 0.0, f"Remote, but outside your regions{shown}", True
+            return LocationFit(1.0, f"Remote or {onsite_hit}{shown}", False)
+        if not fits or "unstated" in fits:
+            return LocationFit(0.9, f"Remote; region not stated{shown}", False)
+        if "unknown" in fits:
+            return LocationFit(0.5, f"Remote; could not tell from where{shown}", False, True)
+        return LocationFit(0.0, f"Remote, but outside your regions{shown}", True)
 
     if onsite_hit:
         kind = "On-site or hybrid" if job.remote is False else "Based"
-        return 1.0, f"{kind} in {onsite_hit}{shown}", False
-    if not text:
-        return 0.5, "Location not stated", False
+        return LocationFit(1.0, f"{kind} in {onsite_hit}{shown}", False)
+    if job.remote is False and rules.remote and not rules.onsite:
+        return LocationFit(0.0, f"On-site or hybrid; this lane is remote only{shown}", True)
+    if not _named_place(text):
+        return LocationFit(0.5, f"Location not stated{shown}", False)
     if (
         job.remote is None
         and rules.remote
         and any(_is_countrywide(segment, rules.remote_regions) for segment in _segments(text))
     ):
         # "United States" with no city usually means remote within the country.
-        return 0.7, f"Country-wide location, likely remote{shown}", False
+        return LocationFit(0.7, f"Country-wide location, likely remote{shown}", False)
     if not rules.onsite and not rules.remote:
-        return 0.5, f"No location rules set for this lane{shown}", False
+        return LocationFit(0.5, f"No location rules set for this lane{shown}", False)
+    if not (mentions_us(text) or _abroad(_fold(text))):
+        return LocationFit(0.5, f"Could not tell where this is{shown}", False, True)
     wanted = "remote" if rules.remote and not rules.onsite else "in your locations"
-    return 0.0, f"Not {wanted}: {text}", True
+    return LocationFit(0.0, f"Not {wanted}: {text}", True)
 
 
 # ------------------------------------------------------------------ factors
@@ -350,11 +613,11 @@ def _pay_check(job: Scorable, lane: Lane) -> tuple[str, bool]:
     rules = lane.compensation
     if job.comp_max is None or not job.comp_period:
         return "", False
-    currency = job.comp_currency or rules.currency
+    currency = (job.comp_currency or rules.currency).upper()
     low = f"{job.comp_min:,.0f}" if job.comp_min is not None else "?"
     shown = f"{currency} {low}-{job.comp_max:,.0f} per {job.comp_period}"
-    if currency != rules.currency:
-        return f"Advertised pay: {shown}", False
+    if currency != rules.currency.upper():
+        return f"Advertised pay: {shown}", False  # another currency: never compared
     floor = rules.min_base if job.comp_period == "year" else rules.min_hourly
     if floor is not None and job.comp_max < floor:
         return f"Advertised pay ({shown}) tops out below your floor of {floor:,.0f}", True
@@ -382,10 +645,12 @@ def score_lane(job: Scorable, lane: Lane, *, now: datetime, fresh_hours: int) ->
             return result
 
     weights = lane.weights
+    location = judge_location(job, lane)
+    result.unsure = location.unsure
     checks = (
         ("title", weights.title, _title_factor(job, lane)),
         ("seniority", weights.seniority, _seniority_factor(job, lane)),
-        ("location", weights.location, judge_location(job, lane)),
+        ("location", weights.location, location[:3]),
         ("skills", weights.skills, _skills_factor(job, lane, result)),
     )
     for name, weight, (value, note, hard_fail) in checks:
@@ -395,11 +660,10 @@ def score_lane(job: Scorable, lane: Lane, *, now: datetime, fresh_hours: int) ->
         result.factors.append(Factor(name, value, weight, note))
 
     if not job.needs_detail:
-        phrase = next(
-            iter(find_terms(job.description_text or "", lane.skip_if_description_has)), None
-        )
+        description = job.description_text or ""
+        phrase = next((p for p in lane.skip_if_description_has if states(description, p)), None)
         if phrase:
-            result.skip = f"Posting mentions '{phrase}'"
+            result.skip = f"Posting says '{phrase}'"
             return result
 
     travel = (job.facts or {}).get("travel_percent")
@@ -428,23 +692,72 @@ def score_lane(job: Scorable, lane: Lane, *, now: datetime, fresh_hours: int) ->
 
 
 def is_blocked(company_name: str, blocked: list[str]) -> str | None:
-    """The blocklist entry that matches this company, if any."""
+    """The blocklist entry that matches this company, if any.
+
+    An entry matches a longer name that contains it ("Northwind" blocks
+    "Northwind Systems Europe"), and a shorter name it starts with: a board
+    added without a company name is known only as "northwind". Blocking one
+    company too many is the safe mistake for a list of places never to apply.
+    """
     key = company_key(company_name)
+    if not key:
+        return None
     for entry in blocked:
         entry_key = company_key(entry)
-        if entry_key and (entry_key == key or re.search(rf"\b{re.escape(entry_key)}\b", key)):
+        if not entry_key:
+            continue
+        if entry_key == key or re.search(rf"\b{re.escape(entry_key)}\b", key):
+            return entry
+        if len(key) >= 4 and entry_key.startswith(key + " "):
             return entry
     return None
+
+
+#: Clearances from least to most, under the names the fact extractor uses.
+_CLEARANCE_RANK = {"public trust": 0, "confidential": 1, "secret": 2, "top secret": 3, "ts/sci": 4}
+_HELD_CLEARANCE = (
+    (4, re.compile(r"\bts ?/ ?sci\b|\bsci\b", re.IGNORECASE)),
+    (3, re.compile(r"\btop secret\b|\bts\b", re.IGNORECASE)),
+    (2, re.compile(r"\bsecret\b", re.IGNORECASE)),
+    (1, re.compile(r"\bconfidential\b", re.IGNORECASE)),
+    (0, re.compile(r"\bpublic trust\b", re.IGNORECASE)),
+)
+
+
+def clearance_check(job: Scorable, profile: Profile | None) -> tuple[str, bool]:
+    """``(note, blocks)`` for a posting that requires an active security clearance.
+
+    Blocks when you hold none, or hold one that is clearly below what is
+    asked. When the two cannot be compared (a clearance this does not know,
+    such as one from another country) the note asks you to check, and the
+    posting is kept off the shortlist rather than guessed at either way.
+    """
+    facts = job.facts or {}
+    if profile is None or facts.get("clearance") != "required":
+        return "", False
+    level = facts.get("clearance_level") or ""
+    wanted = f"an active {level + ' ' if level else ''}security clearance"
+    held = profile.security_clearance
+    if not held:
+        return f"Requires {wanted}", True
+    have = next((rank for rank, pattern in _HELD_CLEARANCE if pattern.search(held)), None)
+    if have is None:
+        return f"Requires {wanted}; check that against yours ({held})", False
+    # With no level named, anything that is a clearance proper will do.
+    need = _CLEARANCE_RANK.get(level.lower(), 1)
+    if need > have:
+        return f"Requires {wanted}; your profile says {held}", True
+    return "", False
 
 
 def profile_block(job: Scorable, profile: Profile | None) -> str | None:
     """A stated requirement of the posting that you cannot meet, whatever the lane."""
     if profile is None:
         return None
+    note, blocks = clearance_check(job, profile)
+    if blocks:
+        return note
     facts = job.facts or {}
-    if facts.get("clearance") == "required" and not profile.security_clearance:
-        level = facts.get("clearance_level")
-        return f"Requires an active {level + ' ' if level else ''}security clearance"
     if facts.get("sponsorship") == "not_offered" and profile.work_authorization.needs_sponsorship:
         return "Posting says visa sponsorship is not available"
     return None
@@ -495,12 +808,28 @@ def score_job(
             breakdown={"lanes": lanes_summary},
         )
 
-    best = max(scored, key=lambda r: r.score)
+    bars = {lane.key: lane.shortlist_at for lane in search.lanes}
+    check_note, _blocks = clearance_check(job, profile)
+
+    def clears(result: LaneResult) -> bool:
+        return (
+            result.score >= bars[result.lane]
+            and not result.provisional
+            and not result.unsure
+            and not check_note
+        )
+
+    # A lane whose own bar the posting clears is preferred to one that merely
+    # scores a little higher against a bar it misses.
+    best = max(scored, key=lambda r: (clears(r), r.score))
     lane = search.lane(best.lane)
     assert lane is not None
-    shortlisted = best.score >= lane.shortlist_at and not best.provisional
+    shortlisted = clears(best)
+    total = lane.weights.total()
     reasons = [f.note for f in sorted(best.factors, key=lambda f: f.points, reverse=True)]
     reasons += best.notes
+    if check_note:
+        reasons.append(check_note)
     asked = (job.facts or {}).get("years_required")
     have = profile.years_experience if profile is not None else None
     if asked and have is not None and asked > have:
@@ -515,8 +844,9 @@ def score_job(
                 {
                     "name": f.name,
                     "value": round(f.value, 3),
-                    "weight": f.weight,
-                    "points": round(100 * f.points / lane.weights.total(), 1),
+                    # Both on the 0-100 scale of the score, whatever the weights add up to.
+                    "weight": round(100 * f.weight / total, 1),
+                    "points": round(100 * f.points / total, 1),
                     "note": f.note,
                 }
                 for f in best.factors
@@ -524,6 +854,7 @@ def score_job(
             "core_found": best.core_found,
             "bonus_found": best.bonus_found,
             "provisional": best.provisional,
+            "unsure": best.unsure or bool(check_note),
             "lanes": lanes_summary,
         },
     )
@@ -546,13 +877,19 @@ def title_matches_any_lane(search: SearchConfig, title: str) -> bool:
     return False
 
 
-def search_terms(search: SearchConfig, limit: int = 10) -> tuple[str, ...]:
-    """Target titles across all lanes, used to query sources that support search."""
+def search_terms(search: SearchConfig) -> tuple[str, ...]:
+    """Every title you named, used to query sources that are searched rather than listed.
+
+    Target titles of all lanes come first, then related ones, so a source
+    that only takes so many searches spends them on what you want most.
+    """
     terms: dict[str, None] = {}
-    for lane in search.lanes:
-        for phrase in lane.titles.target:
-            terms.setdefault(phrase.strip().lower())
-    return tuple(list(terms)[:limit])
+    for kind in ("target", "related"):
+        for lane in search.lanes:
+            for phrase in getattr(lane.titles, kind):
+                if phrase.strip():
+                    terms.setdefault(phrase.strip().lower())
+    return tuple(terms)
 
 
 # -------------------------------------------------------------- persistence

@@ -135,6 +135,57 @@ def test_feed_filters(
     assert present in text and absent not in text
 
 
+def test_job_page_says_why_a_good_score_is_not_shortlisted(
+    app_client: TestClient, session: Session, user: User, user_config: UserConfig
+) -> None:
+    job = add_manual_job(
+        session, title="Principal Platform Engineer", company="Acme Robotics",
+        description=DESCRIPTION, location="Smallville", url="https://example.com/acme/9",
+        now=utcnow(),
+    )  # fmt: skip
+    score_jobs(session, user.id, user_config.search, now=utcnow(), profile=user_config.profile)
+    session.commit()
+    text = app_client.get(f"/jobs/{job.id}").text
+    assert "Could not tell where this is (Smallville)" in text
+    assert "Kept off the shortlist" in text and "On the shortlist" not in text
+
+
+def test_pay_filter_compares_like_with_like(
+    app_client: TestClient, session: Session, jobs: dict[str, Job]
+) -> None:
+    def listed() -> bool:
+        return "Principal Platform Engineer" in app_client.get("/feed?view=all&min_pay=180000").text
+
+    job = jobs["principal"]
+    assert listed()
+    job.comp_min, job.comp_max, job.comp_currency = 110000.0, 185000.0, "EUR"
+    session.commit()
+    assert not listed()  # euros are not compared with a floor in dollars
+    job.comp_currency = "usd"
+    session.commit()
+    assert listed()
+    job.comp_min, job.comp_max = 200000.0, None  # "from $200,000": only a minimum is given
+    session.commit()
+    assert listed()
+    job.comp_min = 150000.0
+    session.commit()
+    assert not listed()
+
+
+def test_pay_label_names_the_period_only_when_it_is_known() -> None:
+    from jobportal.web.deps import pay
+
+    job = Job(comp_min=8000.0, comp_max=10000.0, comp_currency="USD", comp_period=None)
+    assert pay(job) == "$8k-10k"
+    job.comp_period = "year"
+    assert pay(job) == "$8k-10k a year"
+    assert pay(Job(comp_min=95.0, comp_max=110.0, comp_currency="usd", comp_period="hour")) == (
+        "$95-110 an hour"
+    )
+    assert pay(Job(comp_max=60.0, comp_currency="SGD", comp_period="hour")) == "60 SGD an hour"
+    assert pay(Job()) == ""
+
+
 def test_empty_feed_points_to_sources(app_client: TestClient) -> None:
     text = app_client.get("/feed").text
     assert "No roles yet" in text and 'href="/sources"' in text

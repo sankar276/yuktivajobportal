@@ -61,9 +61,12 @@ class LeverAdapter(SourceAdapter):
         locations = [place for place in locations if place]
         location = "; ".join(locations) if locations else text_of(categories.get("location"))
         workplace = item.get("workplaceType")
-        salary = item.get("salaryRange") or {}
+        salary = item.get("salaryRange")
+        salary = salary if isinstance(salary, dict) else {}
         interval = str(salary.get("interval") or "").lower()
         period = "hour" if "hour" in interval else ("year" if "year" in interval else None)
+        if period is None:
+            salary = {}  # monthly, daily, one-off: not comparable with a yearly or hourly floor
         department = " / ".join(
             part for part in (categories.get("department"), categories.get("team")) if part
         )

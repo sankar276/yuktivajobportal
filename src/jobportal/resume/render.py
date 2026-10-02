@@ -7,6 +7,8 @@ most reliably.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,7 +21,6 @@ from playwright.sync_api import Browser
 from jobportal.browser import launch_browser
 from jobportal.resume.model import TailoredResume
 from jobportal.settings import Settings
-from jobportal.text import slugify
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -151,5 +152,17 @@ def write_docx(resume: TailoredResume, path: Path) -> Path:
 
 
 def resume_basename(name: str) -> str:
-    """'Alex Example' -> 'Alex_Example_Resume'. The name a recruiter will see."""
-    return slugify(name).replace("-", "_").title() + "_Resume"
+    """'Alex Example' -> 'Alex_Example_Resume'. The name a recruiter will see.
+
+    The name keeps its own capitals ("McDonald"). Accents are dropped where
+    plain letters remain ("José" -> "Jose"); a name in another script is
+    kept as written rather than lost.
+    """
+    parts = []
+    for word in re.findall(r"[^\W_]+", unicodedata.normalize("NFC", name or "")):
+        plain = "".join(
+            char for char in unicodedata.normalize("NFKD", word) if not unicodedata.combining(char)
+        )
+        parts.append(plain if plain.isascii() else word)
+    base = "_".join(parts)[:80].rstrip("_")
+    return f"{base}_Resume" if base else "Resume"

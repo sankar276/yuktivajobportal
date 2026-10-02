@@ -113,11 +113,12 @@ class Variant(StrictModel):
 
 
 class TailorOptions(StrictModel):
-    #: The most recent N roles get the larger bullet budget.
+    #: The first N roles in the file get the larger bullet budget. Roles are
+    #: taken in the order you list them (newest first), not sorted by date.
     recent_roles: int = Field(default=2, ge=0)
     max_bullets_recent: int = Field(default=6, ge=1)
     max_bullets_older: int = Field(default=3, ge=0)
-    #: Roles older than this many (by position) are listed without bullets.
+    #: Roles after this many, in file order, are listed without bullets.
     detail_roles: int = Field(default=5, ge=1)
 
 
