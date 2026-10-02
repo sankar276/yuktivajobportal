@@ -11,12 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from jobportal.apply.service import approve
+from jobportal.apply.service import add_event, approve
 from jobportal.browser import LazyBrowser
 from jobportal.cli import app
-from jobportal.config import UserConfig
+from jobportal.config import UserConfig, load_user_config
 from jobportal.crawl import add_source
-from jobportal.db import get_session_factory
+from jobportal.db import get_session_factory, utcnow
 from jobportal.http import PoliteClient
 from jobportal.inbox.ingest import ingest_inbox
 from jobportal.manual import ManualJobError, add_manual_job, hosted_form_url
@@ -24,6 +24,7 @@ from jobportal.models import Application, Job, JobScore, LedgerEntry, Source, Us
 from jobportal.pipeline import RunSummary, make_transport, run_once
 from jobportal.settings import Settings
 from jobportal.sources import SourceSpec
+from jobportal.users import get_default_user
 from jobportal.worker import Worker
 from tests.conftest import FIXTURES, NOW, CapturedMail, FakeWeb, fixture_json
 from tests.formserver import FormServer
@@ -349,6 +350,27 @@ def test_cli_init_check_and_sources(settings: Settings, tmp_path: Path) -> None:
             "lever",
             "ashby",
         ]
+
+
+def test_cli_since_lists_what_was_sent_and_who_replied(settings: Settings) -> None:
+    runner.invoke(app, ["init"])
+    with get_session_factory()() as session:
+        user = get_default_user(session, load_user_config(settings.data_dir).profile)
+        job = add_manual_job(
+            session, title="Cloud Architect", company="Odyssey Staffing", description="AWS.",
+            contact_email="sai@odyssey.example", now=utcnow(),
+        )  # fmt: skip
+        application = Application(
+            user_id=user.id, job_id=job.id, channel="email", status="replied", submitted_at=utcnow()
+        )
+        session.add(application)
+        session.flush()
+        add_event(application, "reply_received", sender="sai@odyssey.example", subject="Re: role")
+        session.commit()
+    output = runner.invoke(app, ["since"]).output
+    assert "1 new postings, 1 applications sent, 1 replies" in output
+    assert "sent (by you): Cloud Architect - Odyssey Staffing" in output
+    assert "reply from sai@odyssey.example: Cloud Architect - Odyssey Staffing" in output
 
 
 def test_cli_reports_config_errors_plainly(settings: Settings) -> None:

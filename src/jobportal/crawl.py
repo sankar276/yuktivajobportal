@@ -29,8 +29,14 @@ from jobportal.text import company_key, html_to_text, job_fingerprint, sha256_te
 
 log = logging.getLogger(__name__)
 
-#: A posting missing from a *queried* (incomplete) listing is closed after this long.
+#: A posting missing from a *queried* (incomplete) listing for this long is
+#: asked about directly: a search shows only its first results, so missing
+#: from them is not the same as gone.
 PARTIAL_CLOSE_AFTER = timedelta(days=7)
+#: Missing for this long without an answer either way, it is closed.
+PARTIAL_GIVE_UP_AFTER = timedelta(days=21)
+#: Such direct questions per source per crawl.
+MAX_PROBES_PER_SOURCE = 10
 #: Detail requests per source per crawl: attempts, whether or not they succeed.
 MAX_DETAILS_PER_SOURCE = 40
 #: A failed detail request is retried after 2, 4, 8 ... hours, at most this long.
@@ -270,6 +276,8 @@ def crawl(
                     session.commit()
                     try:
                         result.hydrated = _hydrate(session, client, source, ref, title_filter, now)
+                        if not listing.complete:
+                            result.closed += _probe_unseen(session, client, source, ref, now)
                     except Exception as exc:
                         session.rollback()
                         log.exception("fetching details for %s failed", source.label)
@@ -400,7 +408,9 @@ def _apply_listing(
     for external_id, job in existing.items():
         if external_id in seen or job.closed_at is not None:
             continue
-        if listing.complete or job.last_seen_at < now - PARTIAL_CLOSE_AFTER:
+        # Missing from a searched listing: left to _probe_unseen, which asks
+        # the board about the posting itself before anything is closed.
+        if listing.complete or job.last_seen_at < now - PARTIAL_GIVE_UP_AFTER:
             job.closed_at = now
             result.closed += 1
 
@@ -517,6 +527,80 @@ def _employment_from_title(title: str) -> str | None:
     return None
 
 
+def _stub(job: Job) -> RawJob:
+    """A stored posting in the shape an adapter's ``fetch_detail`` takes."""
+    return RawJob(
+        external_id=job.external_id,
+        title=job.title,
+        company=job.company_name,
+        url=job.url,
+        apply_url=job.apply_url,
+        location=job.location,
+        remote=job.remote,
+        requisition_id=job.requisition_id,
+        posted_at=job.posted_at,
+        needs_detail=True,
+        raw=dict(job.raw or {}),
+    )
+
+
+def _probe_unseen(
+    session: Session, client: PoliteClient, source: Source, ref: SourceRef, now: datetime
+) -> int:
+    """Ask a searched board about postings its search no longer returns.
+
+    Returns how many were closed. A posting whose own page still answers is
+    still open, however far down the search results it has slipped; one that
+    is gone is closed; one that cannot be asked about (a stub never read, a
+    failing request) is left for ``PARTIAL_GIVE_UP_AFTER`` to settle.
+    """
+    adapter = ADAPTERS[source.kind]
+    missing = session.scalars(
+        select(Job)
+        .where(
+            Job.source_id == source.id,
+            Job.closed_at.is_(None),
+            Job.last_seen_at < now - PARTIAL_CLOSE_AFTER,
+        )
+        .order_by(Job.last_seen_at, Job.id)
+    ).all()
+    closed = probes = 0
+    for job in missing:
+        if job.needs_detail:
+            # Never read because no lane wanted its title: nothing is lost by closing it.
+            job.closed_at = now
+            closed += 1
+            continue
+        if job.detail_retry_at is not None and job.detail_retry_at > now:
+            continue
+        if probes >= MAX_PROBES_PER_SOURCE:
+            break
+        probes += 1
+        try:
+            answer = adapter.fetch_detail(client, ref, _stub(job))
+        except RobotsDisallowed:
+            break
+        except NotFound:
+            job.closed_at = now
+            closed += 1
+        except Exception as exc:  # no answer either way: ask again later
+            log.info("could not ask %s about job %s: %s", source.label, job.external_id, exc)
+            session.rollback()
+            job.detail_failures += 1
+            job.detail_retry_at = _retry_at(job, now)
+        else:
+            if answer.needs_detail:  # this source cannot be asked about one posting
+                job.closed_at = now
+                closed += 1
+            else:
+                job.last_seen_at = now
+                job.detail_failures = 0
+                job.detail_retry_at = None
+        session.commit()
+    session.commit()
+    return closed
+
+
 def _retry_at(job: Job, now: datetime) -> datetime:
     """When a failed detail request may be tried again: 2, 4, 8 ... hours on."""
     hours = 2 ** min(max(job.detail_failures, 1), 12)
@@ -552,21 +636,8 @@ def _hydrate(
         if attempts >= MAX_DETAILS_PER_SOURCE:
             break
         attempts += 1
-        stub = RawJob(
-            external_id=job.external_id,
-            title=job.title,
-            company=job.company_name,
-            url=job.url,
-            apply_url=job.apply_url,
-            location=job.location,
-            remote=job.remote,
-            requisition_id=job.requisition_id,
-            posted_at=job.posted_at,
-            needs_detail=True,
-            raw=dict(job.raw or {}),
-        )
         try:
-            detail = adapter.fetch_detail(client, ref, stub)
+            detail = adapter.fetch_detail(client, ref, _stub(job))
         except RobotsDisallowed as exc:
             log.info("detail for %s blocked by robots.txt: %s", source.label, exc)
             break

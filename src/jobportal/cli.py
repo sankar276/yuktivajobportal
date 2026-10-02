@@ -24,7 +24,15 @@ from jobportal.config import (
     load_user_config,
 )
 from jobportal.db import get_session_factory, init_db, utcnow
-from jobportal.models import WAITING_STATUSES, Application, AppStatus, Job, JobScore, Source
+from jobportal.models import (
+    WAITING_STATUSES,
+    Application,
+    ApplicationEvent,
+    AppStatus,
+    Job,
+    JobScore,
+    Source,
+)
 from jobportal.settings import Settings, get_settings
 
 app = typer.Typer(
@@ -609,9 +617,19 @@ def since(hours: Annotated[int, typer.Argument(help="Look back this many hours."
             select(Job).where(Job.first_seen_at >= cutoff, Job.is_backfill.is_(False))
         ).all()
         sent = session.scalars(select(Application).where(Application.submitted_at >= cutoff)).all()
+        replies = session.scalars(
+            select(ApplicationEvent)
+            .where(ApplicationEvent.kind == "reply_received", ApplicationEvent.at >= cutoff)
+            .order_by(ApplicationEvent.at)
+        ).all()
         typer.echo(
-            f"In the last {hours}h: {len(new_jobs)} new postings, {len(sent)} applications sent."
+            f"In the last {hours}h: {len(new_jobs)} new postings, "
+            f"{len(sent)} applications sent, {len(replies)} replies."
         )
         for application in sent:
             how = "unattended" if application.auto else "by you"
             typer.echo(f"  sent ({how}): {application.job.title} - {application.job.company_name}")
+        for event in replies:
+            job = event.application.job
+            sender = event.detail.get("sender") or "someone"
+            typer.echo(f"  reply from {sender}: {job.title} - {job.company_name}")

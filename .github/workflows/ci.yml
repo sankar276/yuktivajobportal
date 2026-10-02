@@ -54,6 +54,6 @@ jobs:
         run: docker build -t jobportal:ci .
       - name: The image starts and answers
         run: |
-          docker run -d --name app -e JOBPORTAL_PASSWORD=ci-only -p 8000:8000 jobportal:ci
+          docker run -d --name app -e JOBPORTAL_PASSWORD=ci-only-password -p 8000:8000 jobportal:ci
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 2; done
           docker logs app; exit 1

@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional: Claude-assisted scoring notes, bullet rephrasing and email drafting.
-# Everything works without it, using deterministic templates.
+# Optional: lets Claude reword selected resume bullets (off unless
+# JOBPORTAL_LLM_REPHRASE is set). Everything else works without it.
 llm = ["anthropic>=0.40"]
 dev = [
   "pytest>=8",

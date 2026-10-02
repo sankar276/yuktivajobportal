@@ -252,6 +252,62 @@ def test_hydrated_job_survives_relisting_and_partial_listing_closes_slowly(
     )
 
 
+def test_a_posting_that_slips_out_of_the_search_results_is_asked_about_not_closed(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    """A search shows its first results only: missing from them is not the same as gone."""
+    name = "Senior-Software-Architect---Data-Center-Systems_JR1973150"
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    web.json("POST", f"{WD_API}/jobs", fixture_json("workday_jobs.json"))
+    web.json("GET", f"{WD_API}{WD_PATH}", fixture_json("workday_detail.json"))
+    wanted = {"title_filter": lambda title: "architect" in title.lower()}
+    crawl(session, client, now=NOW, **wanted)
+    assert _jobs(session)[name].needs_detail is False
+
+    # The search stops returning it, but its own page still answers.
+    web.json("POST", f"{WD_API}/jobs", {"total": 0, "jobPostings": []})
+    later = NOW + timedelta(days=8)
+    (result,) = crawl(session, client, now=later, **wanted)
+    job = _jobs(session)[name]
+    assert job.closed_at is None and job.last_seen_at == later
+    assert result.closed == 1  # only the stub nobody read
+    assert len(web.calls("/job/US-CA-Santa-Clara/")) == 2  # read once, asked about once
+
+    # No answer either way: kept, and asked again later rather than every pass.
+    web.add("GET", f"{WD_API}{WD_PATH}", httpx.Response(503))
+    much_later = later + timedelta(days=8)
+    crawl(session, client, now=much_later, **wanted)
+    job = _jobs(session)[name]
+    assert job.closed_at is None and job.detail_retry_at is not None
+    asked = len(web.calls("/job/US-CA-Santa-Clara/"))
+    crawl(session, client, now=much_later + timedelta(minutes=30), **wanted)
+    assert len(web.calls("/job/US-CA-Santa-Clara/")) == asked
+
+    # Its page is gone: now it is closed.
+    web.json("GET", f"{WD_API}{WD_PATH}", {"error": "gone"}, status=404)
+    (result,) = crawl(session, client, now=much_later + timedelta(days=2), **wanted)
+    assert result.closed == 1 and _jobs(session)[name].closed_at is not None
+
+
+def test_a_posting_missing_for_weeks_with_no_answer_is_closed(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    name = "Senior-Software-Architect---Data-Center-Systems_JR1973150"
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    web.json("POST", f"{WD_API}/jobs", fixture_json("workday_jobs.json"))
+    web.json("GET", f"{WD_API}{WD_PATH}", fixture_json("workday_detail.json"))
+    wanted = {"title_filter": lambda title: "architect" in title.lower()}
+    crawl(session, client, now=NOW, **wanted)
+    web.json("POST", f"{WD_API}/jobs", {"total": 0, "jobPostings": []})
+    web.add("GET", f"{WD_API}{WD_PATH}", httpx.Response(503))
+    crawl(session, client, now=NOW + timedelta(days=10), **wanted)
+    assert _jobs(session)[name].closed_at is None
+    crawl(session, client, now=NOW + timedelta(days=22), **wanted)
+    assert _jobs(session)[name].closed_at is not None
+
+
 def test_detail_404_closes_the_job(session: Session, client: PoliteClient, web: FakeWeb) -> None:
     add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
     session.commit()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from jobportal.config import (
     load_user_config,
 )
 from jobportal.resume.model import load_resume_bank
-from tests.conftest import CONFIG
+from tests.conftest import CONFIG, ROOT
 
 
 def _edit(path: Path, change) -> None:
@@ -130,3 +131,16 @@ def test_saying_you_hold_no_clearance_means_none(data_dir: Path, written: object
 def test_a_named_clearance_is_kept_as_written(data_dir: Path) -> None:
     _edit(data_dir / "profile.yaml", lambda d: d.update(security_clearance="Top Secret"))
     assert load_profile(data_dir).security_clearance == "Top Secret"
+
+
+def test_env_example_lists_every_setting_and_nothing_else() -> None:
+    """The README points at .env.example for "every setting"; keep that true."""
+    from jobportal.settings import Settings
+
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    listed = set(re.findall(r"^# ([A-Z][A-Z_]+)=", text, re.MULTILINE))
+    expected = {
+        "ANTHROPIC_API_KEY" if name == "anthropic_api_key" else f"JOBPORTAL_{name.upper()}"
+        for name in Settings.model_fields
+    }
+    assert listed - {"POSTGRES_PASSWORD"} == expected

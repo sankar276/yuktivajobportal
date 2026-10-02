@@ -93,8 +93,15 @@ def _apply_view(query: Any, view: str, *, fresh_since: datetime) -> Any:
     if view == "saved":
         return query.where(JobScore.saved.is_(True))
     if view == "fresh":
+        # Posted lately, or found lately on a board that was already being
+        # read: after a few days switched off, what was posted meanwhile is
+        # still new to you.
         return query.where(
-            JobScore.decision != Decision.skip.value, fresh_since <= EFFECTIVE_POSTED
+            JobScore.decision != Decision.skip.value,
+            or_(
+                fresh_since <= EFFECTIVE_POSTED,
+                and_(Job.is_backfill.is_(False), fresh_since <= Job.first_seen_at),
+            ),
         )
     if view == "shortlist":
         return query.where(JobScore.decision == Decision.shortlist.value)

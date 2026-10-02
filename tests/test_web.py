@@ -186,6 +186,19 @@ def test_pay_label_names_the_period_only_when_it_is_known() -> None:
     assert pay(Job()) == ""
 
 
+def test_roles_found_after_time_away_are_still_new(
+    app_client: TestClient, session: Session, jobs: dict[str, Job]
+) -> None:
+    job = jobs["principal"]
+    job.posted_at = utcnow() - timedelta(days=3)  # posted while the app was switched off
+    session.commit()
+    assert "Principal Platform Engineer" in app_client.get("/feed?view=fresh").text
+    # Not so for the backlog a board already had when it was first read.
+    job.is_backfill = True
+    session.commit()
+    assert "Principal Platform Engineer" not in app_client.get("/feed?view=fresh").text
+
+
 def test_empty_feed_points_to_sources(app_client: TestClient) -> None:
     text = app_client.get("/feed").text
     assert "No roles yet" in text and 'href="/sources"' in text
