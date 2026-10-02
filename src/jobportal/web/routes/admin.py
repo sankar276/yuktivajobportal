@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from jobportal.apply.answers import save_answer
 from jobportal.config import UserConfig
-from jobportal.crawl import add_source
+from jobportal.crawl import add_source, remove_source
 from jobportal.db import utcnow
 from jobportal.http import FetchError, PoliteClient
 from jobportal.models import Answer, LedgerEntry, Source, User
@@ -104,7 +104,11 @@ def ledger_delete(
 def sources_page(
     request: Request, session: Session = Depends(db), _config: UserConfig = Depends(config_dep)
 ) -> Response:
-    rows = session.scalars(select(Source).order_by(Source.company_name, Source.token)).all()
+    rows = session.scalars(
+        select(Source)
+        .where(Source.removed_at.is_(None))
+        .order_by(Source.company_name, Source.token)
+    ).all()
     boards = [s for s in rows if s.kind in ADAPTERS]
     return render(
         request,
@@ -164,7 +168,7 @@ def sources_add(
 @router.post("/sources/{source_id}/toggle")
 def sources_toggle(request: Request, source_id: int, session: Session = Depends(db)) -> Response:
     source = session.get(Source, source_id)
-    if source is None:
+    if source is None or source.kind not in ADAPTERS or source.removed_at is not None:
         raise HTTPException(status_code=404)
     source.enabled = not source.enabled
     flash(request, f"{source.label}: {'watching again' if source.enabled else 'paused'}.")
@@ -174,11 +178,14 @@ def sources_toggle(request: Request, source_id: int, session: Session = Depends(
 @router.post("/sources/{source_id}/delete")
 def sources_delete(request: Request, source_id: int, session: Session = Depends(db)) -> Response:
     source = session.get(Source, source_id)
-    if source is None or source.kind not in ADAPTERS:
+    if source is None or source.kind not in ADAPTERS or source.removed_at is not None:
         raise HTTPException(status_code=404)
     label = source.label
-    session.delete(source)
-    flash(request, f"Stopped watching {label}; its postings were removed.")
+    _deleted, kept = remove_source(session, source)
+    message = f"Stopped watching {label}; its postings were removed."
+    if kept:
+        message += f" The {kept} you applied to are kept, with their applications."
+    flash(request, message)
     return back(request, "/sources")
 
 

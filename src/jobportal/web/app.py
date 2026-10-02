@@ -54,9 +54,12 @@ def create_app(settings: Settings | None = None, *, worker_minutes: int | None =
     app.state.worker = None
     app.state.login_limiter = LoginLimiter()
 
-    def nav_counts(_request: Request) -> dict[str, int]:
+    def nav_counts(request: Request) -> dict[str, int]:
+        user_id = getattr(request.state, "user_id", None)
+        if user_id is None:
+            return {"queue": 0}
         with get_session_factory()() as session:
-            return {"queue": queries.waiting_count(session)}
+            return {"queue": queries.waiting_count(session, user_id)}
 
     app.state.nav_counts = nav_counts
 

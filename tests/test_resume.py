@@ -206,7 +206,7 @@ ORIGINAL = "Migrated delivery for 120 services to GitOps with ArgoCD, cutting de
     "rewrite",
     [
         "Cut deploy time from 45 to 9 minutes by migrating delivery for 120 services to GitOps with ArgoCD.",
-        "Moved 120 services to GitOps delivery with ArgoCD; deploy time fell from 45 to 9 minutes.",
+        "Cutting deploy time from 45 to 9 minutes, migrated delivery for 120 services to GitOps.",
     ],
 )
 def test_guard_accepts_rewording(rewrite: str) -> None:
@@ -221,6 +221,16 @@ def test_guard_accepts_rewording(rewrite: str) -> None:
         (ORIGINAL.replace("9 minutes", "9 minutes (80% faster)"), "adds numbers"),
         (ORIGINAL.replace("with ArgoCD", "with ArgoCD and Terraform"), "adds skills"),
         (ORIGINAL.replace("services", "services at Goldman Sachs"), "adds names"),
+        (ORIGINAL.replace("services", "services at goldman sachs"), "adds words"),
+        # New verbs are new claims too: only your own words, reordered or trimmed.
+        (
+            "Moved 120 services to GitOps delivery with ArgoCD; deploy time fell from 45 to 9 minutes.",
+            "adds words",
+        ),
+        (ORIGINAL.replace("9 minutes", "9 months"), "changes what a number refers to"),
+        (ORIGINAL.replace("from 45 to 9", "from 9 to 45"), "changes what a number refers to"),
+        (ORIGINAL.replace("120 services", "120 teams"), "adds words"),
+        (ORIGINAL + " Promoted to vice president.", "adds a sentence"),
         (
             ORIGINAL + " Led a team of engineers across several regions and business units.",
             "much longer",
@@ -288,6 +298,7 @@ def test_rephrase_keeps_only_guarded_rewrites(settings: Settings) -> None:
     request = fake.requests[0]
     assert request["model"] == settings.llm_model
     assert "must not add any fact" in request["system"]
+    assert "<posting>" in request["messages"][0]["content"]  # the posting is fenced off
     assert request["messages"][0]["role"] == "user"
 
 

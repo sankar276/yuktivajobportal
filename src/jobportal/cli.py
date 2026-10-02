@@ -238,7 +238,9 @@ def sources_import(
 def sources_list() -> None:
     """Show watched boards and how the last read went."""
     with _session() as session:
-        rows = session.scalars(select(Source).order_by(Source.id)).all()
+        rows = session.scalars(
+            select(Source).where(Source.removed_at.is_(None)).order_by(Source.id)
+        ).all()
         if not rows:
             typer.echo("No sources yet. Add one with: jobportal sources add <url>")
             return
@@ -253,13 +255,21 @@ def sources_list() -> None:
 
 @sources_app.command("remove")
 def sources_remove(source_id: int) -> None:
-    """Stop watching a board and delete its postings."""
+    """Stop watching a board and delete its postings (roles you applied to are kept)."""
+    from jobportal.crawl import remove_source
+
     with _session() as session:
         source = session.get(Source, source_id)
-        if source is None:
+        if source is None or source.removed_at is not None:
             raise _fail(f"No source #{source_id}")
-        session.delete(source)
-        typer.echo(f"Removed #{source_id} {source.label}")
+        label = source.label
+        try:
+            deleted, kept = remove_source(session, source)
+        except ValueError as exc:
+            raise _fail(str(exc)) from exc
+        typer.echo(f"Removed #{source_id} {label}: {deleted} postings deleted.")
+        if kept:
+            typer.echo(f"Kept {kept} you applied to, with their applications and history.")
 
 
 # ----------------------------------------------------------------- pipeline

@@ -54,7 +54,6 @@ def find_conflict(
         select(LedgerEntry)
         .where(
             LedgerEntry.user_id == user_id,
-            LedgerEntry.client_key == client_key,
             LedgerEntry.vendor_key != company_key(vendor),
             LedgerEntry.submitted_at >= now - timedelta(days=window_days),
         )
@@ -65,7 +64,27 @@ def find_conflict(
             (LedgerEntry.application_id.is_(None))
             | (LedgerEntry.application_id != exclude_application_id)
         )
-    return session.scalars(query).first()
+    # Compared in Python: vendors write the same client in different ways.
+    for entry in session.scalars(query):
+        if same_company(entry.client_key, client_key):
+            return entry
+    return None
+
+
+def same_company(one: str, other: str) -> bool:
+    """Do two company keys name the same company?
+
+    Equal, or one is the start of the other once spaces are ignored
+    ("jp morgan" and "jpmorgan chase"). This only ever raises a warning for
+    you to judge, so it leans towards flagging.
+    """
+    if not one or not other:
+        return False
+    if one == other:
+        return True
+    a, b = one.replace(" ", ""), other.replace(" ", "")
+    shorter, longer = sorted((a, b), key=len)
+    return len(shorter) >= 5 and longer.startswith(shorter)
 
 
 def describe(entry: LedgerEntry) -> str:

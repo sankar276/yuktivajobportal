@@ -17,6 +17,7 @@ from jobportal.models import (
     Decision,
     Job,
     JobScore,
+    Source,
 )
 
 PAGE_SIZE = 40
@@ -75,7 +76,11 @@ def _base(user_id: int) -> Any:
         select(Job, JobScore, Application)
         .join(JobScore, and_(JobScore.job_id == Job.id, JobScore.user_id == user_id))
         .outerjoin(Application, and_(Application.job_id == Job.id, Application.user_id == user_id))
-        .where(Job.closed_at.is_(None))
+        .where(
+            Job.closed_at.is_(None),
+            # Postings kept only for their history after their board was removed.
+            Job.source_id.not_in(select(Source.id).where(Source.removed_at.is_not(None))),
+        )
     )
 
 
@@ -148,12 +153,16 @@ def view_counts(
     return counts
 
 
-def waiting_count(session: Session) -> int:
+def waiting_count(session: Session, user_id: int) -> int:
+    """How many of this person's applications are waiting on them."""
     return (
         session.scalar(
             select(func.count())
             .select_from(Application)
-            .where(Application.status.in_([s.value for s in WAITING_STATUSES]))
+            .where(
+                Application.user_id == user_id,
+                Application.status.in_([s.value for s in WAITING_STATUSES]),
+            )
         )
         or 0
     )

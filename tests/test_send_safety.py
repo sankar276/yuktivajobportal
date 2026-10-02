@@ -779,3 +779,62 @@ def test_addresses_that_parsers_and_browsers_read_differently_are_refused(
         filler.check_form_url("https://evil.test\\@jobs.lever.co/acme/123/apply", settings)
     good = make_job(session, source, user=user, apply_url="https://jobs.lever.co/acme/123/apply")
     assert "jobs.lever.co" in form_hosts(good, settings)
+
+
+# ------------------------------------------------------------ removed boards
+
+
+def test_removing_a_board_keeps_what_you_applied_to(session: Session, user: User) -> None:
+    from jobportal.crawl import add_source, remove_source, special_source
+    from jobportal.models import Source
+    from jobportal.sources import SourceSpec
+
+    source = make_source(session, "greenhouse", "acme", "Acme Robotics")
+    applied = make_job(session, source, user=user, title="Applied role", external_id="1")
+    other = make_job(session, source, user=user, title="Other role", external_id="2")
+    application = Application(
+        user_id=user.id, job_id=applied.id, channel="form", status="interviewing"
+    )
+    session.add(application)
+    session.flush()
+    applied_id, other_id, source_id = applied.id, other.id, source.id
+
+    assert remove_source(session, source, now=NOW) == (1, 1)
+    source = session.get(Source, source_id)
+    assert source.removed_at == NOW and source.enabled is False
+    assert session.get(Job, other_id) is None
+    assert session.get(Job, applied_id) is not None
+    assert session.get(Application, application.id).status == "interviewing"
+
+    # Adding the board again reconnects to the kept posting: no second copy,
+    # so no second application for the same role.
+    spec = SourceSpec(kind="greenhouse", token="acme", company_name="Acme Robotics")
+    again, created = add_source(session, spec)
+    assert created and again.id == source_id and again.removed_at is None and again.enabled
+
+    empty = make_source(session, "lever", "globex")
+    make_job(session, empty, user=user, title="Unapplied", external_id="9")
+    empty_id = empty.id
+    assert remove_source(session, empty) == (1, 0)
+    assert session.get(Source, empty_id) is None
+    with pytest.raises(ValueError):
+        remove_source(session, special_source(session, "manual"))
+
+
+@pytest.mark.parametrize(
+    ("one", "other", "same"),
+    [
+        ("JP Morgan", "JPMorgan Chase", True),
+        ("Southwind Air", "Southwind Air Inc.", True),
+        ("Southwind", "Southwind Air", True),
+        ("Acme", "Acme Robotics", False),  # too short to tell
+        ("Northwind", "Southwind", False),
+        ("", "Southwind", False),
+    ],
+)
+def test_the_ledger_recognises_a_client_written_differently(
+    one: str, other: str, same: bool
+) -> None:
+    from jobportal.text import company_key
+
+    assert ledger.same_company(company_key(one), company_key(other)) is same

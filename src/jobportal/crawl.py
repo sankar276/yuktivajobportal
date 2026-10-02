@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from jobportal.comp import extract_comp
@@ -21,7 +21,7 @@ from jobportal.config import Employment
 from jobportal.db import utcnow
 from jobportal.facts import extract_facts
 from jobportal.http import FetchError, NotFound, PoliteClient, RobotsDisallowed
-from jobportal.models import Job, Source, SourceStatus
+from jobportal.models import Application, Job, Source, SourceStatus
 from jobportal.sources import ADAPTERS, CrawlContext, Listing, RawJob, SourceRef, SourceSpec
 from jobportal.sources.base import infer_remote, remote_from_description
 from jobportal.text import company_key, html_to_text, job_fingerprint, sha256_text, squash
@@ -81,6 +81,11 @@ def add_source(session: Session, spec: SourceSpec, company_name: str = "") -> tu
     if existing is not None:
         if company_name and not existing.company_name:
             existing.company_name = company_name
+        if existing.removed_at is not None:
+            # Removed earlier but kept for its application history: watch it again.
+            existing.removed_at = None
+            existing.enabled = True
+            return existing, True
         return existing, False
     source = Source(
         kind=spec.kind,
@@ -91,6 +96,43 @@ def add_source(session: Session, spec: SourceSpec, company_name: str = "") -> tu
     session.add(source)
     session.flush()
     return source, True
+
+
+def remove_source(
+    session: Session, source: Source, *, now: datetime | None = None
+) -> tuple[int, int]:
+    """Stop watching a board. Returns ``(postings_deleted, postings_kept)``.
+
+    Postings you have an application for are kept, together with the
+    application: your history, and the guard against applying to the same
+    role twice, must not disappear with the board. When anything is kept the
+    source row stays too, switched off and marked removed, so that adding the
+    board again reconnects to those postings instead of creating new copies.
+    """
+    if source.kind not in ADAPTERS:
+        raise ValueError("The mailbox and the roles you added yourself are not removable sources.")
+    kept = set(
+        session.scalars(
+            select(Application.job_id)
+            .join(Job, Job.id == Application.job_id)
+            .where(Job.source_id == source.id)
+        )
+    )
+    total = _count_all(session, source.id)
+    if not kept:
+        session.delete(source)  # takes its postings with it
+        session.flush()
+        return total, 0
+    session.execute(
+        delete(Job)
+        .where(Job.source_id == source.id, Job.id.not_in(kept))
+        .execution_options(synchronize_session=False)
+    )
+    source.enabled = False
+    source.removed_at = now or utcnow()
+    session.flush()
+    session.expire_all()  # the bulk delete bypassed the objects loaded in this session
+    return total - len(kept), len(kept)
 
 
 def special_source(session: Session, kind: str) -> Source:
@@ -121,7 +163,9 @@ def crawl(
     """
     now = now or utcnow()
     context = context or CrawlContext()
-    query = select(Source).where(Source.enabled.is_(True), Source.kind.in_(list(ADAPTERS)))
+    query = select(Source).where(
+        Source.enabled.is_(True), Source.removed_at.is_(None), Source.kind.in_(list(ADAPTERS))
+    )
     if source_ids is not None:
         query = query.where(Source.id.in_(list(source_ids)))
     sources = list(session.scalars(query.order_by(Source.id)))
@@ -175,6 +219,12 @@ def _fail(source: Source, result: CrawlResult, status: SourceStatus, message: st
     source.last_error = message[:2000]
     result.status = status.value
     result.error = message
+
+
+def _count_all(session: Session, source_id: int) -> int:
+    return (
+        session.scalar(select(func.count()).select_from(Job).where(Job.source_id == source_id)) or 0
+    )
 
 
 def _count_open(session: Session, source_id: int) -> int:

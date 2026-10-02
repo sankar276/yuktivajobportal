@@ -180,8 +180,12 @@ def config_dep(settings: Settings = Depends(settings_dep)) -> UserConfig:
         raise ConfigProblem(str(exc)) from exc
 
 
-def user_dep(session: Session = Depends(db), config: UserConfig = Depends(config_dep)) -> User:
-    return get_default_user(session, config.profile)
+def user_dep(
+    request: Request, session: Session = Depends(db), config: UserConfig = Depends(config_dep)
+) -> User:
+    user = get_default_user(session, config.profile)
+    request.state.user_id = user.id  # for the page chrome (the queue badge)
+    return user
 
 
 # ------------------------------------------------------------------ helpers
