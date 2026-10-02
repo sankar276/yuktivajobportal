@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import urllib.request
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -118,7 +117,7 @@ class PoliteClient:
         # library look the name up a second time. Not possible through an
         # outbound proxy (the proxy does the looking up), and pointless with
         # a stand-in transport that has no network underneath.
-        self._pin = pin if pin is not None else (transport is None and not _behind_proxy())
+        self._pin = pin if pin is not None else (transport is None and not netguard.behind_proxy())
         self._client = httpx.Client(
             headers={
                 "User-Agent": self.settings.user_agent,
@@ -358,14 +357,6 @@ class PoliteClient:
                 self._sleep(delay)
 
         raise FetchError(f"{method} {url} failed: {last_error}", status=last_status)
-
-
-def _behind_proxy() -> bool:
-    """Is outbound traffic sent through a proxy (environment or system settings)?"""
-    try:
-        return bool(urllib.request.getproxies())
-    except Exception:  # an unreadable system setting is not worth failing over
-        return False
 
 
 def _backoff(attempt: int) -> float:

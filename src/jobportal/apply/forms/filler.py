@@ -36,10 +36,11 @@ from playwright.sync_api import Browser, BrowserContext, Page, Request, Route
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
+from jobportal import egress
 from jobportal.apply.answers import AnswerBook
 from jobportal.apply.forms.fields import FieldKind, FormField, Resolution, to_dict
 from jobportal.http import PoliteClient
-from jobportal.netguard import UrlRefused, check_public_url, is_local_url
+from jobportal.netguard import UrlRefused, behind_proxy, check_public_url, is_local_url
 from jobportal.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -220,12 +221,28 @@ def _off_site(page: Page, allowed_hosts: frozenset[str] | None) -> dict[str, str
 
 
 def _new_page(browser: Browser, settings: Settings) -> tuple[BrowserContext, Page]:
-    """A fresh, isolated browser context with the request guard on it."""
-    context = browser.new_context()
+    """A fresh, isolated browser context that can only reach the public internet.
+
+    Two guards. Every connection the context makes goes through the egress
+    proxy, which looks the name up once, refuses anything that is not a
+    public address and connects to the address it checked: that covers what
+    no page-level hook sees (redirect hops, popups, workers) and a name that
+    answers differently the second time. On top of it, requests to a local
+    address are aborted before they are sent. Behind an outbound proxy of your
+    own only the second guard applies, as the proxy does the connecting.
+    """
+    guarded = not settings.allow_local_addresses
+    if guarded and not behind_proxy():
+        # "<-loopback>": even localhost goes through the proxy, to be refused there.
+        context = browser.new_context(
+            proxy={"server": egress.shared().url, "bypass": "<-loopback>"}
+        )
+    else:
+        context = browser.new_context()
     page = context.new_page()
     # An application form has no business opening further windows.
     context.on("page", lambda other: other.close() if other is not page else None)
-    if not settings.allow_local_addresses:
+    if guarded:
 
         def handler(route: Route, request: Request) -> None:
             if is_local_url(request.url):

@@ -11,7 +11,7 @@ import logging
 import stat
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -72,9 +72,10 @@ class Settings(BaseSettings):
     #: Path to a Chromium/Chrome binary. Unset = the one Playwright installed.
     chromium_path: str | None = None
     headless: bool = True
-    #: Run Chromium inside its own sandbox. Off by default because it does not
-    #: start as root or in most containers; turn it on where it works.
-    chromium_sandbox: bool = False
+    #: Run Chromium inside its own sandbox. ``auto`` uses the sandbox where it
+    #: starts and says so in the log where it does not (as root, and in most
+    #: containers). ``true`` refuses to run without it; ``false`` never tries.
+    chromium_sandbox: bool | Literal["auto"] = "auto"
     #: Let the crawler and the form filler reach localhost and private
     #: addresses. Off by default; only tests and local demos need it.
     allow_local_addresses: bool = False

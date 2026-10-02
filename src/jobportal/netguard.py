@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import urllib.request
 from urllib.parse import SplitResult, urlsplit
 
 _LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
@@ -74,12 +75,21 @@ def resolve(host: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(info[4][0]) for info in infos))
 
 
-def _is_ip(host: str) -> bool:
+def is_ip(host: str) -> bool:
+    """Is ``host`` a literal IP address rather than a name?"""
     try:
         ipaddress.ip_address(host.split("%", 1)[0])
     except ValueError:
         return False
     return True
+
+
+def behind_proxy() -> bool:
+    """Is outbound traffic sent through a proxy (environment or system settings)?"""
+    try:
+        return bool(urllib.request.getproxies())
+    except Exception:  # an unreadable system setting is not worth failing over
+        return False
 
 
 def _clean(host: str) -> str:
@@ -95,7 +105,7 @@ def is_local_host(host: str) -> bool:
     host = _clean(host)
     if _local_by_name(host):
         return True
-    if _is_ip(host):
+    if is_ip(host):
         return not is_public_address(host)
     return any(not is_public_address(address) for address in resolve(host))
 
@@ -130,7 +140,7 @@ def public_addresses(
     """
     parts = _split(url)
     host = _clean(parts.hostname or "")
-    if _is_ip(host):
+    if is_ip(host):
         addresses: tuple[str, ...] = ()
         local = not is_public_address(host)
     else:
