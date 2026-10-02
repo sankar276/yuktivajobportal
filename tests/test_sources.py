@@ -147,7 +147,8 @@ def test_workday_queries_with_search_terms(client: PoliteClient, web: FakeWeb) -
 
     assert listing.complete is False
     architect, marketing = listing.jobs
-    assert architect.external_id == "JR1973150"
+    assert architect.external_id == "Senior-Software-Architect---Data-Center-Systems_JR1973150"
+    assert architect.requisition_id == "JR1973150"
     assert architect.needs_detail is True
     assert architect.location == ""  # "6 Locations" is not a place
     assert marketing.location == "US, CA, Santa Clara"
@@ -184,7 +185,11 @@ def test_workday_falls_back_to_sitemap(client: PoliteClient, web: FakeWeb) -> No
         httpx.Response(200, text=fixture_text("workday_sitemap.xml")),
     )
     jobs = ADAPTERS["workday"].list_jobs(client, WD, CTX).jobs
-    assert [job.external_id for job in jobs] == ["JR1973150", "JR2012361"]
+    assert [job.external_id for job in jobs] == [
+        "Senior-Software-Architect---Data-Center-Systems_JR1973150",
+        "Senior-DGX-Cloud-AI-Infrastructure-Software-Engineer_JR2012361",
+    ]  # the same ids the listing gives
+    assert [job.requisition_id for job in jobs] == ["JR1973150", "JR2012361"]
     assert jobs[0].title == "Senior Software Architect - Data Center Systems"
     assert jobs[0].raw["externalPath"].startswith("/job/US-CA-Santa-Clara/")
     assert all(job.needs_detail for job in jobs)
@@ -211,7 +216,6 @@ def test_workday_helpers() -> None:
     [
         ("https://boards.greenhouse.io/acme", "greenhouse", "acme"),
         ("https://job-boards.greenhouse.io/acme/jobs/123", "greenhouse", "acme"),
-        ("https://job-boards.eu.greenhouse.io/acme", "greenhouse", "acme"),
         ("https://boards.greenhouse.io/embed/job_board?for=acme", "greenhouse", "acme"),
         ("https://boards-api.greenhouse.io/v1/boards/acme/jobs", "greenhouse", "acme"),
         ("jobs.lever.co/globex", "lever", "globex"),
@@ -323,3 +327,133 @@ def test_parse_employment(label: str | None, expected: str | None) -> None:
 )
 def test_infer_remote(location: str, workplace: str | None, expected: bool | None) -> None:
     assert infer_remote(location, workplace) is expected
+
+
+# ----------------------------------------------------- reading what boards say
+
+
+@pytest.mark.parametrize(
+    ("location", "declared", "expected"),
+    [
+        ("", "Fully Remote", True),
+        ("", "Remote Eligible", True),
+        ("", "Virtual", True),
+        ("", "REMOTE", True),
+        ("New York", "On Site", False),
+        ("New York", "on_site", False),
+        ("New York", "Hybrid", False),
+        ("Virtual - US", None, True),
+        ("Home Based - US", None, True),
+        ("US - Home Office", None, True),
+        ("Telecommute - US", None, True),
+        ("United States - Nationwide", None, True),
+        ("Austin, TX (Hybrid)", None, False),
+        ("Austin, TX", None, None),
+    ],
+)
+def test_infer_remote_reads_declared_types_and_synonyms(
+    location: str, declared: str | None, expected: bool | None
+) -> None:
+    assert infer_remote(location, declared) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("This is a fully remote role.", True),
+        ("We are a remote-first company.", True),
+        ("Please note this role is not fully remote; it is on-site in our New York office.", None),
+        ("This is not a 100% remote position.", None),
+        ("The team isn't fully remote yet.", None),
+        ("Kubernetes platform work.", None),
+    ],
+)
+def test_remote_from_description_respects_negation(text: str, expected: bool | None) -> None:
+    from jobportal.sources.base import remote_from_description
+
+    assert remote_from_description(text) is expected
+
+
+def test_ashby_declared_workplace_outranks_the_remote_flag() -> None:
+    from jobportal.sources.ashby import AshbyAdapter
+
+    source = SourceRef(id=1, kind="ashby", token="acme", company_name="Acme")
+    item = {
+        "id": "1", "title": "Platform Architect", "location": "New York",
+        "isRemote": True, "workplaceType": "Hybrid",
+        "secondaryLocations": ["Boston", {"location": "Austin"}, None],
+    }  # fmt: skip
+    job = AshbyAdapter()._job(item, source)
+    assert job is not None and job.remote is False
+    assert job.location == "New York; Boston; Austin"
+    remote = AshbyAdapter()._job({**item, "workplaceType": "Remote"}, source)
+    assert remote is not None and remote.remote is True
+
+
+@pytest.mark.parametrize(
+    ("title", "contract"),
+    [
+        ("Cloud Architect (Contract)", True),
+        ("Cloud Architect - Contract", True),
+        ("Contract Cloud Architect", True),
+        ("DevOps Contractor", True),
+        ("Cloud Architect - C2C", True),
+        ("Principal Engineer - Smart Contract Platform", False),
+        ("Principal Engineer - Contract Lifecycle Team", False),
+        ("Contracts Manager", False),
+        ("Contract Manager", False),
+        ("Principal Platform Engineer", False),
+    ],
+)
+def test_contract_titles(title: str, contract: bool) -> None:
+    from jobportal.crawl import is_contract_title
+
+    assert is_contract_title(title) is contract
+
+
+@pytest.mark.parametrize(
+    ("text", "contract"),
+    [
+        ("This is a 6 month contract with possible extension.", True),
+        ("Contract-to-hire opportunity.", True),
+        ("Contract duration: 12 months.", True),
+        ("We are unable to work with C2C or third-party agencies.", False),
+        ("No C2C.", False),
+        ("This is not a contract position.", False),
+        ("You will negotiate vendor terms and contract length with cloud providers.", False),
+        ("Full-time role with benefits.", False),
+    ],
+)
+def test_contract_descriptions(text: str, contract: bool) -> None:
+    from jobportal.crawl import is_contract_text
+
+    assert is_contract_text(text) is contract
+
+
+def test_workday_detail_with_structured_locations(client: PoliteClient, web: FakeWeb) -> None:
+    from jobportal.sources.base import RawJob
+    from jobportal.sources.workday import WorkdayAdapter
+
+    source = WD
+    path = "/job/US/Architect_R-1"
+    web.json(
+        "GET",
+        f"{WD_API}{path}",
+        {
+            "jobPostingInfo": {
+                "title": "Architect", "jobDescription": "<p>Kubernetes</p>",
+                "location": "Austin, TX", "additionalLocations": [{"descriptor": "Dallas, TX"}, "Remote"],
+                "remoteType": "Remote Eligible", "externalUrl": "javascript:alert(1)",
+            }
+        },
+    )  # fmt: skip
+    stub = RawJob(
+        external_id="Architect_R-1",
+        title="Architect",
+        url="https://x.example/job",
+        needs_detail=True,
+        raw={"externalPath": path},
+    )
+    job = WorkdayAdapter().fetch_detail(client, source, stub)
+    assert job.location == "Austin, TX; Dallas, TX; Remote" and job.remote is True
+    assert job.url == "https://x.example/job"  # a script link is not a link

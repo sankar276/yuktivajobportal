@@ -258,6 +258,63 @@ def test_worker_tick_sends_approved_and_survives_bad_config(
     assert len(smtp_server.envelopes) == 1
 
 
+@pytest.mark.browser
+def test_worker_prepares_and_sends_even_when_reading_fails(
+    session: Session,
+    user: User,
+    user_config: UserConfig,
+    settings: Settings,
+    data_dir: Path,
+    browser: Browser,
+    web: FakeWeb,
+    smtp_server: CapturedMail,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import SecretStr
+
+    from jobportal import pipeline as pipeline_module
+    from jobportal import worker as worker_module
+
+    add_manual_job(
+        session, title="Principal Platform Engineer", company="Acme Robotics",
+        description="Kubernetes platform on AWS with Terraform, GitOps, Kafka and Go.",
+        location="Remote - US", contact_email="jobs@acme.example", now=NOW,
+    )  # fmt: skip
+    session.commit()
+    settings.imap_host, settings.imap_username = "imap.example.com", "alex@example.com"
+    settings.imap_password = SecretStr("app-password")
+    crawls: list[object] = []
+
+    def broken_mailbox(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("invalid literal for int() with base 10: b'abc'")
+
+    def broken_crawl(*_args: object, **kwargs: object) -> None:
+        crawls.append(kwargs.get("min_interval"))
+        raise AttributeError("'dict' object has no attribute 'strip'")
+
+    monkeypatch.setattr(worker_module, "ingest_inbox", broken_mailbox)
+    monkeypatch.setattr(pipeline_module, "crawl", broken_crawl)
+    worker = Worker(
+        settings,
+        browser_factory=lambda: LazyBrowser(settings, browser=browser),
+        client_factory=lambda: PoliteClient(settings, transport=httpx.MockTransport(web.handler)),
+    )
+
+    summary = worker.tick(now=NOW)
+    assert summary is not None  # the pass was not abandoned
+    assert summary.prepared == {"needs_review": 1}
+    assert any("Mailbox" in error for error in summary.errors)
+    assert any("Sources" in error for error in summary.errors)
+
+    # The failed reading is not repeated every few seconds ...
+    worker.tick(now=NOW + timedelta(seconds=15))
+    assert len(crawls) == 1
+    # ... but "Read them now" means now, and means every source.
+    worker.request_crawl()
+    worker.tick(now=NOW + timedelta(seconds=30))
+    assert len(crawls) == 2 and crawls[-1] is None
+
+
 # --------------------------------------------------------------------- cli
 
 runner = CliRunner()

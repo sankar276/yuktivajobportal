@@ -28,21 +28,28 @@ from jobportal.sources.base import (
     SourceAdapter,
     SourceRef,
     SourceSpec,
+    build_jobs,
     infer_remote,
+    listed,
     parse_datetime,
     parse_employment,
+    text_of,
+    web_url,
 )
 
 log = logging.getLogger(__name__)
 
 PAGE_SIZE = 20
 MAX_PAGES_PER_TERM = 5
+#: How many of your titles are searched for, target titles first.
+MAX_SEARCH_TERMS = 25
 MAX_SITEMAP_JOBS = 400
 _JOBS_HOST_RE = re.compile(r"^(?P<tenant>[a-z0-9_-]+)\.wd\d+\.myworkdayjobs\.com$", re.I)
 _SITE_HOST_RE = re.compile(r"^wd\d+\.myworkdaysite\.com$", re.I)
 _LOCALE_RE = re.compile(r"^[a-z]{2}-[A-Z]{2}$")
 _POSTED_RE = re.compile(r"posted\s+(\d+)\+?\s+days?\s+ago", re.I)
 _REQ_RE = re.compile(r"_([A-Za-z]{0,4}-?\d[\w-]*)$")
+_REQ_BULLET_RE = re.compile(r"[A-Za-z]{0,6}[-_ ]?\d[\w-]*")
 
 
 class WorkdayAdapter(SourceAdapter):
@@ -68,14 +75,18 @@ class WorkdayAdapter(SourceAdapter):
     # -------------------------------------------------------------- listing
 
     def list_jobs(self, client: PoliteClient, source: SourceRef, context: CrawlContext) -> Listing:
-        terms = tuple(source.config.get("search") or context.search_terms) or ("",)
+        terms = tuple(source.config.get("search") or context.search_terms)[:MAX_SEARCH_TERMS]
         try:
-            jobs = self._query(client, source, terms)
+            jobs = self._query(client, source, terms or ("",))
         except (RobotsDisallowed, NotFound):
             raise
         except FetchError as exc:
             log.info("workday query failed for %s (%s); trying the sitemap", source.label, exc)
-            jobs = self._sitemap(client, source)
+            try:
+                jobs = self._sitemap(client, source)
+            except FetchError as fallback:
+                # The sitemap was only a second try: what went wrong is the query.
+                raise exc from fallback
         # A queried listing is never the full set of open roles.
         return Listing(jobs=jobs, complete=False)
 
@@ -94,11 +105,11 @@ class WorkdayAdapter(SourceAdapter):
                         "searchText": term,
                     },
                 )
-                postings = response.json().get("jobPostings") or []
-                for item in postings:
-                    job = self._stub(item, source)
-                    if job is not None:
-                        found.setdefault(job.external_id, job)
+                postings = listed(response.json(), "jobPostings", source.label)
+                for job in build_jobs(
+                    postings, lambda item: self._stub(item, source), source.label
+                ):
+                    found.setdefault(job.external_id, job)
                 if len(postings) < PAGE_SIZE:
                     break
         return list(found.values())
@@ -106,13 +117,17 @@ class WorkdayAdapter(SourceAdapter):
     def _stub(self, item: dict[str, Any], source: SourceRef) -> RawJob | None:
         path = item.get("externalPath")
         title = (item.get("title") or "").strip()
-        if not path or not title:
+        if not isinstance(path, str) or not path or not title:
             return None
-        bullets = item.get("bulletFields") or []
-        requisition = str(bullets[0]) if bullets else _requisition_from_path(path)
+        # The bullets are free-form ("Full time", a requisition number, both);
+        # only one that looks like a requisition number is taken for one.
+        bullets = [str(bullet).strip() for bullet in item.get("bulletFields") or []]
+        requisition = next(
+            (bullet for bullet in bullets if _REQ_BULLET_RE.fullmatch(bullet)), ""
+        ) or _requisition_from_path(path)
         location = (item.get("locationsText") or "").strip()
         return RawJob(
-            external_id=requisition or path.rsplit("/", 1)[-1],
+            external_id=_external_id(path),
             title=title,
             company=source.company_name or self._parts(source)[1],
             url=f"{self.board_url(source)}{path}",
@@ -144,7 +159,7 @@ class WorkdayAdapter(SourceAdapter):
             requisition = _requisition_from_path(external_path)
             title = _title_from_slug(slug)
             job = RawJob(
-                external_id=requisition or slug,
+                external_id=_external_id(external_path),
                 title=title,
                 company=source.company_name or self._parts(source)[1],
                 url=f"{self.board_url(source)}{external_path}",
@@ -165,16 +180,22 @@ class WorkdayAdapter(SourceAdapter):
         if not path:
             return job
         payload = client.get(f"{self._api(source)}{path}").json()
-        info = payload.get("jobPostingInfo") or {}
-        places = [info.get("location") or "", *(info.get("additionalLocations") or [])]
-        location = "; ".join(dict.fromkeys(p.strip() for p in places if p and p.strip()))
-        job.title = (info.get("title") or job.title).strip()
-        job.description_html = info.get("jobDescription") or ""
+        info = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
+        if not isinstance(info, dict):
+            raise FetchError(f"{source.label}: the posting's details were not in the answer")
+        places = [text_of(info.get("location"))]
+        places += [text_of(place) for place in info.get("additionalLocations") or []]
+        location = "; ".join(dict.fromkeys(place for place in places if place))
+        job.title = str(info.get("title") or job.title).strip()
+        job.description_html = str(info.get("jobDescription") or "")
         job.location = location or job.location
-        job.remote = infer_remote(job.location, info.get("remoteType"))
-        job.employment_type = parse_employment(info.get("timeType"))
+        remote_type = info.get("remoteType")
+        job.remote = infer_remote(
+            job.location, remote_type if isinstance(remote_type, str) else None
+        )
+        job.employment_type = parse_employment(text_of(info.get("timeType")) or None)
         job.requisition_id = str(info.get("jobReqId") or job.requisition_id)
-        job.url = info.get("externalUrl") or job.url
+        job.url = web_url(info.get("externalUrl")) or job.url
         job.posted_at = parse_datetime(info.get("startDate")) or job.posted_at
         job.needs_detail = False
         job.raw = {**job.raw, **{k: v for k, v in info.items() if k != "jobDescription"}}
@@ -201,6 +222,15 @@ class WorkdayAdapter(SourceAdapter):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", tenant) or not re.fullmatch(r"[A-Za-z0-9_-]+", site):
             return None
         return SourceSpec(kind=cls.kind, token=f"{host}/{tenant}/{site}")
+
+
+def _external_id(path: str) -> str:
+    """The posting's own slug: the last part of its path, the same from any listing.
+
+    Unique per posting on a site, unlike a requisition number (several
+    postings can share one) or a bullet line (which may just say "Full time").
+    """
+    return unquote(path.rstrip("/").rsplit("/", 1)[-1])
 
 
 def _requisition_from_path(path: str) -> str:

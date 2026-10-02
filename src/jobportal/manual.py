@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlsplit
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from jobportal.comp import extract_comp
@@ -79,9 +80,17 @@ def add_manual_job(
         remote = remote_from_description(text)
     comp = extract_comp(text)
     source = special_source(session, SourceKind.manual.value)
+    external_id = sha256_text(url or f"{company}|{title}|{now.isoformat()}")[:40]
+    already = session.scalar(
+        select(Job).where(Job.source_id == source.id, Job.external_id == external_id)
+    )
+    if already is not None:
+        raise ManualJobError(
+            f"You already added this posting: {already.title} at {already.company_name}."
+        )
     job = Job(
         source_id=source.id,
-        external_id=sha256_text(url or f"{company}|{title}|{now.isoformat()}")[:40],
+        external_id=external_id,
         company_name=company[:200],
         company_key=company_key(company)[:200],
         title=title[:500],

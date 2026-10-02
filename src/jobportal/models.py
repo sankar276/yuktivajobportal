@@ -52,6 +52,8 @@ class SourceStatus(StrEnum):
     not_found = "not_found"
     robots_blocked = "robots_blocked"
     error = "error"
+    #: Answered, but listed nothing where there were postings before.
+    empty = "empty"
 
 
 class Decision(StrEnum):

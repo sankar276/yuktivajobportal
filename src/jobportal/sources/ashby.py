@@ -17,10 +17,14 @@ from jobportal.sources.base import (
     SourceAdapter,
     SourceRef,
     SourceSpec,
+    build_jobs,
     clean_token,
     infer_remote,
+    listed,
     parse_datetime,
     parse_employment,
+    text_of,
+    web_url,
 )
 
 API = "https://api.ashbyhq.com/posting-api/job-board"
@@ -46,21 +50,23 @@ class AshbyAdapter(SourceAdapter):
         )
         if response.not_modified:
             return Listing(not_modified=True, etag=source.etag, last_modified=source.last_modified)
-        payload = response.json()
-        jobs = [
-            self._job(item, source)
-            for item in payload.get("jobs", [])
-            if item.get("id") and item.get("isListed", True)
-        ]
+        items = listed(response.json(), "jobs", source.label)
+        jobs = build_jobs(items, lambda item: self._job(item, source), source.label)
         return Listing(jobs=jobs, etag=response.etag, last_modified=response.last_modified)
 
-    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob:
-        places = [item.get("location") or ""]
-        places += [s.get("location") or "" for s in item.get("secondaryLocations") or []]
-        location = "; ".join(dict.fromkeys(p.strip() for p in places if p and p.strip()))
-        remote = item.get("isRemote")
+    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob | None:
+        if not item.get("id") or not item.get("isListed", True):
+            return None
+        places = [text_of(item.get("location"))]
+        places += [text_of(place) for place in item.get("secondaryLocations") or []]
+        location = "; ".join(dict.fromkeys(p for p in places if p))
+        # A declared workplace type ("Hybrid", "OnSite") outranks the remote
+        # flag: boards tick "remote" for roles that are remote some days only.
+        declared = item.get("workplaceType")
+        remote = infer_remote("", declared) if isinstance(declared, str) else None
         if remote is None:
-            remote = infer_remote(location, item.get("workplaceType"))
+            flag = item.get("isRemote")
+            remote = flag if isinstance(flag, bool) else infer_remote(location)
         employment = str(item.get("employmentType") or "")
         comp_min, comp_max, currency, period = _salary(item.get("compensation") or {})
         department = " / ".join(part for part in (item.get("department"), item.get("team")) if part)
@@ -68,8 +74,8 @@ class AshbyAdapter(SourceAdapter):
             external_id=str(item["id"]),
             title=(item.get("title") or "").strip(),
             company=source.company_name or source.token,
-            url=item.get("jobUrl") or "",
-            apply_url=item.get("applyUrl") or None,
+            url=web_url(item.get("jobUrl")),
+            apply_url=web_url(item.get("applyUrl")) or None,
             location=location,
             remote=bool(remote) if remote is not None else None,
             employment_type=_EMPLOYMENT.get(employment.lower()) or parse_employment(employment),

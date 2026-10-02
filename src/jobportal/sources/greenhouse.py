@@ -18,14 +18,21 @@ from jobportal.sources.base import (
     SourceAdapter,
     SourceRef,
     SourceSpec,
+    build_jobs,
     clean_token,
     infer_remote,
+    listed,
     parse_datetime,
+    text_of,
+    web_url,
 )
 from jobportal.text import unescape_if_needed
 
 API = "https://boards-api.greenhouse.io/v1/boards"
-_HOST_RE = re.compile(r"^(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io$", re.I)
+# Boards hosted in Greenhouse's EU region are served from other API hosts,
+# which this adapter has not been checked against; they are not recognised
+# rather than half-supported.
+_HOST_RE = re.compile(r"^(?:job-boards|boards)\.greenhouse\.io$", re.I)
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -41,19 +48,21 @@ class GreenhouseAdapter(SourceAdapter):
         )
         if response.not_modified:
             return Listing(not_modified=True, etag=source.etag, last_modified=source.last_modified)
-        payload = response.json()
-        jobs = [self._job(item, source) for item in payload.get("jobs", []) if item.get("id")]
+        items = listed(response.json(), "jobs", source.label)
+        jobs = build_jobs(items, lambda item: self._job(item, source), source.label)
         return Listing(jobs=jobs, etag=response.etag, last_modified=response.last_modified)
 
-    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob:
+    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob | None:
+        if not item.get("id"):
+            return None
         job_id = str(item["id"])
-        location = ((item.get("location") or {}).get("name") or "").strip()
-        departments = [d.get("name", "") for d in item.get("departments") or [] if d.get("name")]
+        location = text_of(item.get("location"))
+        departments = [text_of(d) for d in item.get("departments") or [] if text_of(d)]
         return RawJob(
             external_id=job_id,
             title=(item.get("title") or "").strip(),
             company=(item.get("company_name") or source.company_name or source.token).strip(),
-            url=item.get("absolute_url")
+            url=web_url(item.get("absolute_url"))
             or f"https://job-boards.greenhouse.io/{source.token}/jobs/{job_id}",
             # The hosted application form, also for boards embedded in a company site.
             apply_url=f"https://job-boards.greenhouse.io/embed/job_app?for={source.token}&token={job_id}",

@@ -101,14 +101,21 @@ def crawl_and_score(
     user = get_default_user(session, config.profile)
     search = config.search
     if do_crawl:
-        summary.crawled = crawl(
-            session,
-            client,
-            context=CrawlContext(search_terms=search_terms(search)),
-            title_filter=partial(title_matches_any_lane, search),
-            min_interval=min_interval,
-            now=now,
-        )
+        try:
+            summary.crawled = crawl(
+                session,
+                client,
+                context=CrawlContext(search_terms=search_terms(search)),
+                title_filter=partial(title_matches_any_lane, search),
+                min_interval=min_interval,
+                now=now,
+            )
+        except Exception as exc:
+            # Reading the boards must never stand in the way of scoring what
+            # is already here, or of preparing and sending.
+            session.rollback()
+            log.exception("reading the sources failed")
+            summary.errors.append(f"Sources: {type(exc).__name__}: {exc}")
     summary.scores = score_jobs(session, user.id, search, now=now, profile=config.profile)
     session.commit()
 

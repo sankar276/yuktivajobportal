@@ -18,10 +18,14 @@ from jobportal.sources.base import (
     SourceAdapter,
     SourceRef,
     SourceSpec,
+    build_jobs,
     clean_token,
     infer_remote,
+    listed,
     parse_datetime,
     parse_employment,
+    text_of,
+    web_url,
 )
 
 _HOSTS = {"jobs.lever.co": "global", "jobs.eu.lever.co": "eu"}
@@ -45,16 +49,17 @@ class LeverAdapter(SourceAdapter):
         )
         if response.not_modified:
             return Listing(not_modified=True, etag=source.etag, last_modified=source.last_modified)
-        payload = response.json()
-        if not isinstance(payload, list):
-            payload = []
-        jobs = [self._job(item, source) for item in payload if item.get("id")]
+        items = listed(response.json(), None, source.label)
+        jobs = build_jobs(items, lambda item: self._job(item, source), source.label)
         return Listing(jobs=jobs, etag=response.etag, last_modified=response.last_modified)
 
-    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob:
+    def _job(self, item: dict[str, Any], source: SourceRef) -> RawJob | None:
+        if not item.get("id"):
+            return None
         categories = item.get("categories") or {}
-        locations = categories.get("allLocations") or []
-        location = "; ".join(locations) if locations else (categories.get("location") or "")
+        locations = [text_of(place) for place in categories.get("allLocations") or []]
+        locations = [place for place in locations if place]
+        location = "; ".join(locations) if locations else text_of(categories.get("location"))
         workplace = item.get("workplaceType")
         salary = item.get("salaryRange") or {}
         interval = str(salary.get("interval") or "").lower()
@@ -66,8 +71,8 @@ class LeverAdapter(SourceAdapter):
             external_id=str(item["id"]),
             title=(item.get("text") or "").strip(),
             company=source.company_name or source.token,
-            url=item.get("hostedUrl") or "",
-            apply_url=item.get("applyUrl") or None,
+            url=web_url(item.get("hostedUrl")),
+            apply_url=web_url(item.get("applyUrl")) or None,
             location=location.strip(),
             remote=infer_remote(location, workplace),
             employment_type=parse_employment(categories.get("commitment")),

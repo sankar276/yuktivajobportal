@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 from jobportal.config import Employment
-from jobportal.http import PoliteClient
+from jobportal.http import FetchError, PoliteClient
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -152,19 +157,36 @@ def parse_employment(value: str | None) -> str | None:
     return None
 
 
+_REMOTE_WORDS_RE = re.compile(
+    r"\bremote\b|\bvirtual\b|\btelecommut\w*|\bwork(?:ing)? from home\b|\bwfh\b"
+    r"|\bhome[- ]?based\b|\bhome office\b|\banywhere\b|\bnationwide\b",
+    re.IGNORECASE,
+)
+_PLACE_BOUND_RE = re.compile(
+    r"\bon[- ]?site\b|\bin[- ]office\b|\bin[- ]person\b|\bhybrid\b|\boffice[- ]based\b",
+    re.IGNORECASE,
+)
+
+
 def infer_remote(location: str | None, workplace_type: str | None = None) -> bool | None:
-    """True/False when the posting says so, ``None`` when it does not say."""
-    workplace = (workplace_type or "").strip().lower().replace("_", "-")
-    if workplace in ("remote", "fully-remote"):
-        return True
-    if workplace in ("on-site", "onsite", "hybrid", "in-office"):
-        return False
-    text = (location or "").lower()
-    if not text:
+    """True/False when the posting says so, ``None`` when it does not say.
+
+    A declared workplace type decides, whatever its spelling ("Remote",
+    "Fully Remote", "Remote Eligible", "Virtual", "On Site", "HYBRID").
+    Otherwise the location string is read for the usual words for remote.
+    """
+    workplace = re.sub(r"[\s_-]+", " ", (workplace_type or "").strip())
+    if workplace:
+        if _PLACE_BOUND_RE.search(workplace):
+            return False
+        if _REMOTE_WORDS_RE.search(workplace):
+            return True
+    text = location or ""
+    if not text.strip():
         return None
-    if "remote" in text or "work from home" in text or "anywhere" in text:
+    if _REMOTE_WORDS_RE.search(text):
         return True
-    if "hybrid" in text or "on-site" in text or "onsite" in text:
+    if _PLACE_BOUND_RE.search(text):
         return False
     return None
 
@@ -176,11 +198,84 @@ _REMOTE_TEXT_RE = re.compile(
     r"|\bwork(?:ing)? from anywhere\b",
     re.IGNORECASE,
 )
+_NOT_BEFORE_RE = re.compile(r"\b(?:not|no|non|never)\b|n['’]t\b", re.IGNORECASE)
 
 
 def remote_from_description(text: str | None) -> bool | None:
-    """True when the description itself says the role is remote; otherwise unknown."""
-    return True if text and _REMOTE_TEXT_RE.search(text) else None
+    """True when the description itself says the role is remote; otherwise unknown.
+
+    "This role is not fully remote" and "this is not a 100% remote position"
+    say the opposite, so a match with a negation just before it does not count.
+    """
+    for match in _REMOTE_TEXT_RE.finditer(text or ""):
+        before = (text or "")[max(0, match.start() - 40) : match.start()]
+        clause = re.split(r"[.;\n]", before)[-1]
+        if not _NOT_BEFORE_RE.search(clause) and not _NOT_BEFORE_RE.search(match.group(0)):
+            return True
+    return None
+
+
+def web_url(value: Any) -> str:
+    """``value`` when it is a plain http(s) address, otherwise an empty string.
+
+    Posting and application links come from the boards. Anything else (a
+    ``javascript:`` link, a ``data:`` blob) must never be stored, shown as a
+    link or handed to the browser.
+    """
+    text = str(value or "").strip()
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return ""
+    return text if parts.scheme in ("http", "https") and parts.hostname else ""
+
+
+def listed(payload: Any, key: str | None, where: str) -> list[dict[str, Any]]:
+    """The postings in a board's answer; a :class:`FetchError` when it is not shaped as expected.
+
+    An answer without its list (``{"jobs": null}``, an error object) is a
+    failed fetch. Treating it as "no postings" would close every job.
+    """
+    items = payload if key is None else (payload.get(key) if isinstance(payload, dict) else None)
+    if not isinstance(items, list):
+        raise FetchError(f"{where}: the board's answer did not contain a list of postings")
+    return [item for item in items if isinstance(item, dict)]
+
+
+def build_jobs(
+    items: list[dict[str, Any]], build: Callable[[dict[str, Any]], RawJob | None], where: str
+) -> list[RawJob]:
+    """Turn postings into jobs one at a time, so one malformed posting costs only itself."""
+    jobs: list[RawJob] = []
+    failed = 0
+    for item in items:
+        try:
+            job = build(item)
+        except Exception as exc:
+            failed += 1
+            log.warning(
+                "%s: skipped a posting that could not be read (%s: %s)",
+                where,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        if job is not None:
+            jobs.append(job)
+    if failed and not jobs:
+        raise FetchError(f"{where}: none of the {failed} postings could be read")
+    return jobs
+
+
+def text_of(value: Any) -> str:
+    """A name out of something that is either the name or an object carrying it."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("descriptor", "name", "location", "label", "text"):
+            if isinstance(value.get(key), str):
+                return str(value[key]).strip()
+    return ""
 
 
 def clean_token(value: str) -> str:

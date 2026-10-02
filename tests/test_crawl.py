@@ -210,7 +210,10 @@ def test_workday_stubs_are_hydrated_only_when_the_title_matches(
 
     assert (result.new, result.hydrated) == (2, 1)
     jobs = _jobs(session)
-    architect, marketing = jobs["JR1973150"], jobs["JR2000001"]
+    architect, marketing = (
+        jobs["Senior-Software-Architect---Data-Center-Systems_JR1973150"],
+        jobs["Marketing-Coordinator_JR2000001"],
+    )
     assert architect.needs_detail is False
     assert "Kubernetes platform" in architect.description_text
     assert architect.remote is True and architect.employment_type == "full_time"
@@ -233,12 +236,20 @@ def test_hydrated_job_survives_relisting_and_partial_listing_closes_slowly(
     web.json("POST", f"{WD_API}/jobs", {"total": 1, "jobPostings": listing["jobPostings"][:1]})
     (result,) = crawl(session, client, now=NOW + timedelta(days=1), title_filter=lambda t: False)
     jobs = _jobs(session)
-    assert result.closed == 0 and jobs["JR2000001"].closed_at is None  # not seen != closed, yet
-    assert "Kubernetes platform" in jobs["JR1973150"].description_text  # detail kept
-    assert jobs["JR1973150"].needs_detail is False
+    assert (
+        result.closed == 0 and jobs["Marketing-Coordinator_JR2000001"].closed_at is None
+    )  # not seen != closed, yet
+    assert (
+        "Kubernetes platform"
+        in jobs["Senior-Software-Architect---Data-Center-Systems_JR1973150"].description_text
+    )  # detail kept
+    assert jobs["Senior-Software-Architect---Data-Center-Systems_JR1973150"].needs_detail is False
 
     (result,) = crawl(session, client, now=NOW + timedelta(days=9), title_filter=lambda t: False)
-    assert result.closed == 1 and _jobs(session)["JR2000001"].closed_at is not None
+    assert (
+        result.closed == 1
+        and _jobs(session)["Marketing-Coordinator_JR2000001"].closed_at is not None
+    )
 
 
 def test_detail_404_closes_the_job(session: Session, client: PoliteClient, web: FakeWeb) -> None:
@@ -246,7 +257,9 @@ def test_detail_404_closes_the_job(session: Session, client: PoliteClient, web: 
     session.commit()
     web.json("POST", f"{WD_API}/jobs", fixture_json("workday_jobs.json"))
     crawl(session, client, now=NOW, title_filter=lambda t: "architect" in t.lower())
-    assert _jobs(session)["JR1973150"].closed_at == NOW
+    assert (
+        _jobs(session)["Senior-Software-Architect---Data-Center-Systems_JR1973150"].closed_at == NOW
+    )
 
 
 def test_add_source_is_idempotent_and_special_sources_are_singletons(session: Session) -> None:
@@ -257,3 +270,237 @@ def test_add_source_is_idempotent_and_special_sources_are_singletons(session: Se
     inbox = special_source(session, "email")
     assert special_source(session, "email").id == inbox.id
     assert inbox.initialized is True
+
+
+# ------------------------------------------------- robustness (review findings)
+
+ARCHITECT = "Senior-Software-Architect---Data-Center-Systems_JR1973150"
+
+
+def test_a_board_whose_data_cannot_be_stored_does_not_stop_the_others(
+    session: Session, client: PoliteClient, web: FakeWeb, monkeypatch
+) -> None:
+    from jobportal import crawl as crawl_module
+
+    good = _greenhouse(session)
+    bad, _ = add_source(session, SourceSpec(kind="lever", token="globex"))
+    session.commit()
+    web.json("GET", GH_URL, fixture_json("greenhouse_jobs.json"))
+    web.json(
+        "GET",
+        "https://api.lever.co/v0/postings/globex?mode=json",
+        fixture_json("lever_postings.json"),
+    )
+    real = crawl_module._apply_listing
+
+    def explode(session, source, listing, result, now):
+        if source.kind == "lever":
+            real(session, source, listing, result, now)  # half done, then it breaks
+            raise RuntimeError("database said no")
+        real(session, source, listing, result, now)
+
+    monkeypatch.setattr(crawl_module, "_apply_listing", explode)
+    results = {r.label: r for r in crawl(session, client, now=NOW)}
+
+    assert results["acme"].status == "ok" and results["acme"].new == 3
+    assert results["globex"].status == "error" and "database said no" in results["globex"].error
+    assert results["globex"].new == 0
+    session.expire_all()
+    stored = {job.source_id for job in session.scalars(select(Job))}
+    assert stored == {good.id}  # the failed board's half-applied listing was rolled back
+    assert session.get(Source, bad.id).last_status == "error"
+    assert session.get(Source, bad.id).last_crawled_at == NOW  # and it is not retried at once
+
+
+def test_one_unreadable_posting_costs_only_itself(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    _greenhouse(session)
+    listing = fixture_json("greenhouse_jobs.json")
+    listing["jobs"][1]["location"] = ["not", "an", "object"]  # the adapter copes
+    listing["jobs"].append({"id": 77, "title": "Broken", "departments": "nonsense"})
+    listing["jobs"].append("not even an object")
+    web.json("GET", GH_URL, listing)
+    (result,) = crawl(session, client, now=NOW)
+    assert result.status == "ok" and result.new >= 3
+
+
+def test_text_a_database_cannot_hold_is_cleaned_not_fatal(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    _greenhouse(session)
+    listing = fixture_json("greenhouse_jobs.json")
+    listing["jobs"][0]["title"] = "Principal\x00 Platform Engineer"
+    listing["jobs"][0]["content"] = "<p>Kubernetes\x00 platform</p>" + "<p>filler</p>" * 100_000
+    listing["jobs"][0]["metadata"] = [{"name": "nul\x00inside", "value": "x\x00y"}]
+    web.json("GET", GH_URL, listing, etag='"' + "e" * 400 + '"')
+    (result,) = crawl(session, client, now=NOW)
+    assert result.status == "ok"
+    job = _jobs(session)["8172508"]
+    assert job.title == "Principal Platform Engineer" and "\x00" not in job.description_html
+    assert len(job.description_html) <= 200_000  # oversized markup is cut before parsing
+    assert "\x00" not in str(job.raw)
+    assert len(session.scalar(select(Source)).etag) == 255
+
+
+def test_links_that_are_not_web_addresses_are_never_stored(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    _greenhouse(session)
+    listing = fixture_json("greenhouse_jobs.json")
+    listing["jobs"][0]["absolute_url"] = "javascript:alert(document.cookie)"
+    web.json("GET", GH_URL, listing)
+    crawl(session, client, now=NOW)
+    job = _jobs(session)["8172508"]
+    assert job.url == "https://job-boards.greenhouse.io/acme/jobs/8172508"  # the board's own page
+    assert not any((j.url or "").startswith("javascript") for j in _jobs(session).values())
+
+
+def test_an_empty_listing_closes_nothing_until_it_is_seen_twice(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    source = _greenhouse(session)
+    web.json("GET", GH_URL, fixture_json("greenhouse_jobs.json"))
+    crawl(session, client, now=NOW)
+
+    web.json("GET", GH_URL, {"jobs": []})
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=1))
+    assert result.status == "empty" and result.closed == 0
+    assert all(job.closed_at is None for job in _jobs(session).values())
+    assert "kept" in session.get(Source, source.id).last_error
+
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=2))
+    assert result.status == "ok" and result.closed == 3  # twice in a row: believed
+
+    # A listing with postings in between starts the count again.
+    web.json("GET", GH_URL, fixture_json("greenhouse_jobs.json"))
+    crawl(session, client, now=NOW + timedelta(hours=3))
+    web.json("GET", GH_URL, {"jobs": []})
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=4))
+    assert result.status == "empty" and result.closed == 0
+
+
+def test_an_answer_without_a_list_of_postings_is_an_error_not_an_empty_board(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    _greenhouse(session)
+    web.json("GET", GH_URL, fixture_json("greenhouse_jobs.json"))
+    crawl(session, client, now=NOW)
+    web.json("GET", GH_URL, {"jobs": None})
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=1))
+    assert result.status == "error" and "list of postings" in result.error
+    assert all(job.closed_at is None for job in _jobs(session).values())
+
+
+def test_a_reopened_and_changed_job_counts_once(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    _greenhouse(session)
+    listing = fixture_json("greenhouse_jobs.json")
+    web.json("GET", GH_URL, listing)
+    crawl(session, client, now=NOW)
+    for job in _jobs(session).values():
+        job.closed_at = NOW
+    session.commit()
+    changed = copy.deepcopy(listing)
+    for item in changed["jobs"]:
+        item["title"] += " II"
+    web.json("GET", GH_URL, changed)
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=1))
+    assert result.updated == 3
+
+
+def test_failed_detail_requests_are_capped_and_backed_off(
+    session: Session, client: PoliteClient, web: FakeWeb, monkeypatch
+) -> None:
+    from jobportal import crawl as crawl_module
+
+    monkeypatch.setattr(crawl_module, "MAX_DETAILS_PER_SOURCE", 5)
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    postings = [
+        {
+            "title": f"Architect {n}",
+            "externalPath": f"/job/US/Architect-{n}_JR{n}",
+            "postedOn": "Posted Today",
+        }
+        for n in range(12)
+    ]
+    web.json("POST", f"{WD_API}/jobs", {"total": 12, "jobPostings": postings})
+    for posting in postings:
+        web.add("GET", f"{WD_API}{posting['externalPath']}", httpx.Response(403))
+
+    crawl(session, client, now=NOW)
+    assert len(web.calls("/job/US/")) == 5  # attempts are counted, not successes
+    crawl(session, client, now=NOW + timedelta(minutes=30))
+    assert len(web.calls("/job/US/")) == 10  # the other postings get their turn
+    failed = [job for job in _jobs(session).values() if job.detail_failures]
+    assert len(failed) == 10 and all(job.detail_retry_at > NOW for job in failed)
+    crawl(session, client, now=NOW + timedelta(minutes=45))
+    assert len(web.calls("/job/US/")) == 12  # the last two; nothing is asked twice so soon
+    crawl(session, client, now=NOW + timedelta(minutes=50))
+    assert len(web.calls("/job/US/")) == 12
+
+
+def test_a_posting_whose_page_is_gone_is_not_reopened_every_pass(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    web.json(
+        "POST", f"{WD_API}/jobs", fixture_json("workday_jobs.json")
+    )  # the detail page is a 404
+    keep = lambda title: "architect" in title.lower()  # noqa: E731
+    crawl(session, client, now=NOW, title_filter=keep)
+    assert _jobs(session)[ARCHITECT].closed_at == NOW
+
+    (result,) = crawl(session, client, now=NOW + timedelta(hours=1), title_filter=keep)
+    assert _jobs(session)[ARCHITECT].closed_at == NOW  # still listed, still closed
+    assert result.updated == 0 and len(web.calls(WD_PATH)) == 1  # and not asked for again
+
+    crawl(session, client, now=NOW + timedelta(days=8), title_filter=keep)
+    assert len(web.calls(WD_PATH)) == 2  # one more look after a week
+
+
+def test_a_failing_workday_query_reports_its_own_error(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    web.add("POST", f"{WD_API}/jobs", httpx.Response(503))  # and there is no sitemap either
+    (result,) = crawl(session, client, now=NOW)
+    assert result.status == "error" and "503" in result.error
+
+
+def test_workday_postings_sharing_a_requisition_stay_separate(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    postings = [
+        {
+            "title": "Architect, Austin",
+            "externalPath": "/job/Austin/Architect_R-10234",
+            "bulletFields": ["R-10234"],
+        },
+        {
+            "title": "Architect, Dallas",
+            "externalPath": "/job/Dallas/Architect_R-10234-1",
+            "bulletFields": ["Full time", "R-10234"],
+        },
+        {
+            "title": "Engineer",
+            "externalPath": "/job/Dallas/Engineer_R-2",
+            "bulletFields": ["Full time"],
+        },
+    ]
+    web.json("POST", f"{WD_API}/jobs", {"total": 3, "jobPostings": postings})
+    (result,) = crawl(session, client, now=NOW, title_filter=lambda _t: False)
+    jobs = _jobs(session)
+    assert result.new == 3 and set(jobs) == {
+        "Architect_R-10234",
+        "Architect_R-10234-1",
+        "Engineer_R-2",
+    }
+    assert jobs["Architect_R-10234-1"].requisition_id == "R-10234"  # not "Full time"
+    assert jobs["Engineer_R-2"].requisition_id == "R-2"
