@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<div id="app">
+  <label for="name">Full name</label><input id="name" type="text" name="name">
+  <label for="email">Email</label><input id="email" type="email" name="email">
+  <div id="msg"></div>
+  <button type="button" id="go">Submit application</button>
+</div>
+<script>
+  document.getElementById("go").addEventListener("click", () => {
+    document.getElementById("msg").innerHTML =
+      "<p class='error-message'>Thank you! One more step: complete the CAPTCHA below. Your application has NOT been sent yet.</p><div class='g-recaptcha' data-sitekey='x'></div>";
+  });
+</script>
+</body></html>

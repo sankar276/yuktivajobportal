@@ -16,17 +16,22 @@ from sqlalchemy.orm import Session
 
 from jobportal.config import Policy
 from jobportal.models import (
-    SENT_STATUSES,
+    OUT_STATUSES,
     Application,
     AppStatus,
     Decision,
     Job,
     JobScore,
     OutboundEmail,
+    SourceKind,
 )
 
-_SENT = [status.value for status in SENT_STATUSES]
+#: Sent, or possibly sent: an attempt whose outcome is unknown uses up the
+#: same allowance as one that was confirmed.
+_OUT = [status.value for status in OUT_STATUSES]
 _ABOUT_TO_SEND = [AppStatus.approved.value, AppStatus.submitting.value]
+#: States of an outgoing email that mean it left (or may have left) this machine.
+WENT_OUT = ("sent", "unknown", "bounced")
 
 
 @dataclass
@@ -37,9 +42,9 @@ class AutoDecision:
 
 
 def _sent_or_queued(since: datetime) -> ColumnElement[bool]:
-    """Went out since ``since``, or is cleared to go out."""
+    """Went out (or may have) since ``since``, or is cleared to go out."""
     return or_(
-        and_(Application.status.in_(_SENT), Application.submitted_at >= since),
+        and_(Application.status.in_(_OUT), Application.submitted_at >= since),
         Application.status.in_(_ABOUT_TO_SEND),
     )
 
@@ -71,6 +76,10 @@ def auto_decision(
         return AutoDecision(False, ["Review mode: every application waits for your approval"])
 
     reasons: list[str] = []
+    if job.source.kind == SourceKind.email.value:
+        # Anyone can send you an email, and its sender address proves nothing.
+        # A reply carrying your resume therefore always waits for your eyes.
+        reasons.append("Roles that arrive by email always wait for your approval")
     if channel not in {str(c) for c in auto.channels}:
         reasons.append(f"Unattended sending is not enabled for {channel} applications")
     if score is None or score.decision != Decision.shortlist.value:
@@ -127,14 +136,17 @@ def email_send_allowed(session: Session, policy: Policy, *, now: datetime) -> tu
         session.scalar(
             select(func.count())
             .select_from(OutboundEmail)
-            .where(OutboundEmail.status == "sent", OutboundEmail.sent_at >= now - timedelta(days=1))
+            .where(
+                OutboundEmail.status.in_(WENT_OUT),
+                OutboundEmail.sent_at >= now - timedelta(days=1),
+            )
         )
         or 0
     )
     if sent_today >= rules.daily_cap:
         return False, f"Daily cap of {rules.daily_cap} emails reached"
     last = session.scalar(
-        select(func.max(OutboundEmail.sent_at)).where(OutboundEmail.status == "sent")
+        select(func.max(OutboundEmail.sent_at)).where(OutboundEmail.status.in_(WENT_OUT))
     )
     if last is not None and rules.min_seconds_between_sends:
         wait = rules.min_seconds_between_sends - (now - last).total_seconds()

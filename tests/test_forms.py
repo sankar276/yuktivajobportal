@@ -159,11 +159,14 @@ def test_eeo_fields_are_recognised_only_as_choices(profile: Profile) -> None:
     [
         ("Yes", ["Yes", "No"], "Yes"),
         ("No", ["Yes", "No"], "No"),
-        (
-            "no",
-            ["Yes, I will require sponsorship", "No, I will not require sponsorship"],
-            "No, I will not require sponsorship",
-        ),
+        # A Yes/No answer picks only a bare Yes/No: an option that says more
+        # ("No, I am a citizen") would put words in your mouth.
+        ("no", ["Yes, I will require sponsorship", "No, I will not require sponsorship"], None),
+        ("No", ["Yes", "No, I am a U.S. citizen or permanent resident"], None),
+        ("Yes", ["Yes, but I will require sponsorship", "No"], None),
+        ("No", ["Yes.", "No."], "No."),
+        ("15", ["Under 15 years", "20 or more"], None),
+        ("decline", ["I decline the background check", "I consent"], None),
         (
             "Yes",
             ["Yes - US citizen", "Yes - permanent resident", "No"],
@@ -476,9 +479,10 @@ def test_no_confirmation_is_never_reported_as_submitted(
 ) -> None:
     monkeypatch.setattr("jobportal.apply.forms.filler.OUTCOME_TIMEOUT_S", 2.0)
     outcome = submit(browser, form_server.url("silent.html"), book, settings=settings)
-    assert outcome.status == "failed"
+    # Neither "sent" nor "nothing happened": it went once and nobody confirmed it.
+    assert outcome.status == "unconfirmed"
     assert "did not confirm" in outcome.error
-    assert len(form_server.posts()) == 1  # it was sent once, and is flagged for a human check
+    assert len(form_server.posts()) == 1
 
 
 @pytest.mark.browser
@@ -531,15 +535,12 @@ def test_assist_records_a_submission_made_by_the_person(
     )
 
     class OneContext:
-        def new_page(self):
-            return context.new_page()
+        def new_context(self):
+            return context
 
-    try:
-        outcome = assist(
-            OneContext(), form_server.url("classic.html"), book, settings=settings, wait_seconds=15
-        )
-    finally:
-        context.close()
+    outcome = assist(
+        OneContext(), form_server.url("classic.html"), book, settings=settings, wait_seconds=15
+    )
     assert outcome.status == "submitted", outcome.blockers
     (sent,) = form_server.posts()
     assert sent.first("job_application[first_name]") == "Alex"  # filled before the person clicked

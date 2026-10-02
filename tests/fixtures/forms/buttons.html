@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<header>
+  <input id="alert_email" type="email" name="alert_email" aria-label="Email">
+  <button type="button" id="alerts">Send me job alerts</button>
+  <button type="button" id="indeed">Apply with Indeed</button>
+</header>
+<form action="/submit" method="post">
+  <label for="name">Full name</label><input id="name" type="text" name="name" required>
+  <button type="submit" id="real">Submit application</button>
+</form>
+<script>
+  document.getElementById("alerts").addEventListener("click", () => {
+    fetch("/subscribe", {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: "subscribed=" + encodeURIComponent(document.getElementById("alert_email").value)});
+  });
+</script>
+</body></html>

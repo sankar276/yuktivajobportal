@@ -1,4 +1,4 @@
-{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed") %}
+{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed", "unconfirmed") %}
 {% set done = ("submitted", "replied", "interviewing", "offer") %}
 {% if score.hidden %}
 <li class="row is-hidden" id="job-{{ job.id }}">

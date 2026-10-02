@@ -160,6 +160,7 @@ def waiting_count(session: Session) -> int:
 
 
 QUEUE_GROUPS: list[tuple[str, str, str]] = [
+    (AppStatus.unconfirmed.value, "Not known whether it went out", "The send was started and no confirmation came back. Check your sent mail or the site, then say which it was. Until you do, it counts as sent and is not tried again."),
     (AppStatus.needs_answers.value, "Needs your answer", "A form asked something you have not answered before. Answer once and it is remembered."),
     (AppStatus.needs_review.value, "Ready for your approval", "Prepared and waiting. Nothing is sent until you approve."),
     (AppStatus.needs_human.value, "Yours to finish", "The site wants a person: a bot check, a login, or a form the app cannot operate."),

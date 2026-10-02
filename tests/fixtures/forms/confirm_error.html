@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<p>Thank you for your interest in Acme Robotics. Apply below.</p>
+<div id="app">
+  <label for="name">Full name</label><input id="name" type="text" name="name">
+  <label for="email">Email</label><input id="email" type="email" name="email">
+  <button type="button" id="go">Submit application</button>
+</div>
+<script>
+  document.getElementById("go").addEventListener("click", () => {
+    document.body.innerHTML = "<p>Thank you for your interest in Acme Robotics.</p><h1>Error 500</h1><p>Something went wrong and nothing was saved. Please try again later.</p>";
+  });
+</script>
+</body></html>

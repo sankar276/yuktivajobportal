@@ -52,12 +52,17 @@ class Worker:
         self.crawl_every = timedelta(minutes=crawl_minutes)
         self.tick_seconds = tick_seconds
         self.stop_event = threading.Event()
+        self._crawl_requested = threading.Event()
         self.last_crawl: datetime | None = None
         self.last_error: str = ""
         self.last_summary: list[str] = []
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def request_crawl(self) -> None:
+        """Read every source on the next pass, whenever it was last read."""
+        self._crawl_requested.set()
 
     def run_forever(self) -> None:
         log.info("worker started (crawl every %s, tick %ss)", self.crawl_every, self.tick_seconds)
@@ -84,8 +89,15 @@ class Worker:
             with self._client_factory() as client, self._browser_factory() as browser:
                 recover_interrupted(session, now=now)
                 session.commit()
+                forced = self._crawl_requested.is_set()
                 due = self.last_crawl is None or now - self.last_crawl >= self.crawl_every
-                if due:
+                if due or forced:
+                    # Reading the mailbox and the boards must never stand in
+                    # the way of preparing and sending: a failure here is
+                    # reported, the next attempt waits for the next crawl
+                    # time, and the pass carries on.
+                    self._crawl_requested.clear()
+                    self.last_crawl = now
                     if self.settings.imap_configured:
                         try:
                             user = get_default_user(session, config.profile)
@@ -93,11 +105,22 @@ class Worker:
                                 ingest_inbox(session, self.settings, config, user, now=now).line()
                             )
                         except InboxError as exc:
+                            session.rollback()
                             summary.errors.append(f"Mailbox: {exc}")
-                    crawl_and_score(
-                        session, config, client, summary, now=now, min_interval=self.crawl_every / 2
-                    )
-                    self.last_crawl = now
+                        except Exception as exc:
+                            session.rollback()
+                            log.exception("reading the mailbox failed")
+                            summary.errors.append(f"Mailbox: {type(exc).__name__}: {exc}")
+                    try:
+                        crawl_and_score(
+                            session, config, client, summary, now=now,
+                            # "Read them now" means now, not "unless read recently".
+                            min_interval=None if forced else self.crawl_every / 2,
+                        )  # fmt: skip
+                    except Exception as exc:
+                        session.rollback()
+                        log.exception("reading the sources failed")
+                        summary.errors.append(f"Sources: {type(exc).__name__}: {exc}")
                 prepare_pending(
                     session, self.settings, config, summary,
                     browser=browser, client=client, llm=LLM(self.settings), now=now,

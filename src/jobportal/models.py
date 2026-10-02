@@ -68,7 +68,10 @@ class AppStatus(StrEnum):
     approved = "approved"  # cleared to send (by you or by the auto policy)
     submitting = "submitting"
     needs_human = "needs_human"  # bot check, login wall or unsupported form
-    failed = "failed"
+    failed = "failed"  # the attempt did not go out
+    #: The send was started and it is not known whether it arrived. Never
+    #: retried by the app: you check, then mark it as sent or prepare it again.
+    unconfirmed = "unconfirmed"
     skipped = "skipped"  # blocked by policy or the ledger; see blockers
     # after sending
     submitted = "submitted"
@@ -89,9 +92,18 @@ SENT_STATUSES = frozenset(
         AppStatus.rejected,
     }
 )
+#: Went out, or may have. These count against the sending caps and against a
+#: second application for the same role.
+OUT_STATUSES = SENT_STATUSES | {AppStatus.unconfirmed}
 #: Statuses that still need something from you before anything is sent.
 WAITING_STATUSES = frozenset(
-    {AppStatus.needs_answers, AppStatus.needs_review, AppStatus.needs_human, AppStatus.failed}
+    {
+        AppStatus.needs_answers,
+        AppStatus.needs_review,
+        AppStatus.needs_human,
+        AppStatus.failed,
+        AppStatus.unconfirmed,
+    }
 )
 #: Statuses in which an application occupies its role (blocks a duplicate).
 ACTIVE_STATUSES = frozenset(set(AppStatus) - {AppStatus.skipped, AppStatus.withdrawn})

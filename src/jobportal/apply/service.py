@@ -2,17 +2,27 @@
 
     preparing -> needs_answers | needs_review | needs_human | approved | skipped
     needs_review --(you approve)--> approved
-    approved --(worker sends)--> submitting -> submitted | failed | needs_human
+    approved --(worker sends)--> submitting -> submitted | unconfirmed | failed | needs_human
+    unconfirmed --(you check)--> submitted | preparing
     submitted -> replied -> interviewing -> offer | rejected   (you move these)
 
 Nothing reaches ``approved`` except through your click or the auto policy, and
-nothing is sent from any other state. Every step is written to the
-application's event log.
+nothing is sent from any other state. ``unconfirmed`` means the send was
+started and nobody knows whether it arrived: it counts as sent for every limit
+and is never retried by the app. Every step is written to the application's
+event log.
+
+Two processes may be working at once (the web app and the worker, or a
+command you run by hand). Every application row carries a version number, so
+a writer working from an old reading of the row fails instead of overwriting
+what happened meanwhile; that is what makes "approved -> submitting" a claim
+only one sender can win.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,12 +30,20 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from jobportal.apply import ledger
 from jobportal.apply.answers import AnswerBook, count_uses, load_answers, save_answer
-from jobportal.apply.email_apply import compose
+from jobportal.apply.email_apply import compose, from_mail
 from jobportal.apply.forms import filler
-from jobportal.apply.mail import MailError, MailTransport, OutgoingMail, build_message, save_draft
+from jobportal.apply.mail import (
+    MailError,
+    MailOutcomeUnknown,
+    MailTransport,
+    OutgoingMail,
+    build_message,
+    save_draft,
+)
 from jobportal.apply.policy import auto_decision, email_send_allowed
 from jobportal.browser import BrowserUnavailable, LazyBrowser
 from jobportal.config import Channel, UserConfig
@@ -34,6 +52,7 @@ from jobportal.http import PoliteClient
 from jobportal.llm import LLM
 from jobportal.models import (
     ACTIVE_STATUSES,
+    OUT_STATUSES,
     SENT_STATUSES,
     Application,
     ApplicationEvent,
@@ -97,15 +116,35 @@ def form_url_trusted(job: Job, settings: Settings | None = None) -> bool:
     must be on that board's own application host: the board's API is third-
     party data and must not be able to point the browser anywhere else.
     """
-    if not job.apply_url:
-        return False
+    return bool(form_hosts(job, settings))
+
+
+def form_hosts(job: Job, settings: Settings | None = None) -> frozenset[str]:
+    """The hosts the browser may end up on when it opens this job's form.
+
+    Empty when the address is not one to open unattended. The filler checks
+    the page it actually landed on against this set before reading or typing
+    anything, so a redirect cannot carry it somewhere else.
+    """
+    url = job.apply_url or ""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return frozenset()
+    # A backslash or a user@ part makes browsers and URL parsers disagree
+    # about which host an address names; such an address is never opened.
+    if not host or "\\" in url or parts.username is not None or parts.password is not None:
+        return frozenset()
     kind = job.source.kind
     if kind == SourceKind.manual.value:
-        return True
-    host = (urlsplit(job.apply_url).hostname or "").lower()
-    if host in FORM_HOSTS.get(kind, frozenset()):
-        return True
-    return bool(settings and settings.allow_local_addresses and is_local_host(host))
+        return frozenset({host})  # a link you pasted yourself: that site, nowhere else
+    allowed = FORM_HOSTS.get(kind, frozenset())
+    if host in allowed:
+        return allowed
+    if settings and settings.allow_local_addresses and is_local_host(host):
+        return frozenset({host})
+    return frozenset()
 
 
 def choose_channel(job: Job, settings: Settings | None = None) -> Channel:
@@ -131,7 +170,7 @@ def _hard_stop(
         return {"kind": "blocked_company", "detail": f"{job.client_name} is on your blocked list."}
     if job.closed_at is not None:
         return {"kind": "closed", "detail": "The posting has been taken down."}
-    twin = session.scalars(
+    twins = session.scalars(
         select(Application)
         .join(Job, Job.id == Application.job_id)
         .where(
@@ -141,8 +180,16 @@ def _hard_stop(
             Application.status.in_([s.value for s in ACTIVE_STATUSES]),
         )
         .order_by(Application.id)
-    ).first()
-    if twin is not None and twin.id != application_id:
+    ).all()
+    out = {status.value for status in OUT_STATUSES}
+    for twin in twins:
+        if twin.id == application_id:
+            continue
+        # An emailed "requirement" names its own company and title, so anyone
+        # can make one look like a real posting. Until you have actually sent
+        # it, it must not be able to push the real posting aside.
+        if from_mail(twin.job) and not from_mail(job) and twin.status not in out:
+            continue
         return {
             "kind": "duplicate",
             "detail": f"Same role as application #{twin.id} ({twin.job.location or 'another posting'}).",
@@ -205,6 +252,29 @@ def request_application(session: Session, user: User, job: Job) -> Application:
     return application
 
 
+#: States from which you may ask for an application to be prepared again.
+RETRYABLE = {
+    AppStatus.failed.value,
+    AppStatus.needs_human.value,
+    AppStatus.skipped.value,
+    AppStatus.needs_answers.value,
+    AppStatus.unconfirmed.value,
+}
+
+
+def retry(session: Session, application: Application) -> None:
+    """Prepare it again. From ``unconfirmed`` this is you saying it did not arrive."""
+    if application.status not in RETRYABLE:
+        raise ApplicationError("This application cannot be prepared again from its current state.")
+    if application.status == AppStatus.unconfirmed.value:
+        ledger.forget_unconfirmed(session, application)
+        application.submitted_at = None
+        application.next_action = ""
+    application.status = AppStatus.preparing.value
+    application.error = ""
+    add_event(application, "requested_again")
+
+
 def prepare_application(
     session: Session,
     settings: Settings,
@@ -227,10 +297,13 @@ def prepare_application(
     application = session.scalar(
         select(Application).where(Application.user_id == user.id, Application.job_id == job.id)
     )
-    if application is not None and application.status in (
-        {s.value for s in SENT_STATUSES} | {AppStatus.approved.value, AppStatus.submitting.value}
-    ):
-        return application  # already cleared or sent: never re-plan underneath it
+    if application is not None:
+        # The caller's list may be minutes old: work from the row as it is now.
+        session.flush()
+        session.refresh(application)
+        if application.status != AppStatus.preparing.value:
+            # Approved, sent, dismissed, waiting on you: never re-plan underneath it.
+            return application
     if application is None:
         application = Application(
             user_id=user.id, job_id=job.id, channel="", status=AppStatus.preparing.value
@@ -290,7 +363,12 @@ def prepare_application(
             config.profile, load_answers(session, user.id), Path(variant.pdf_path or "")
         )
         outcome = filler.prepare(
-            browser.get(), job.apply_url, book, settings=settings, client=client
+            browser.get(),
+            job.apply_url,
+            book,
+            settings=settings,
+            client=client,
+            allowed_hosts=form_hosts(job, settings),
         )
         prepared = outcome.plan.to_prepared() if outcome.plan else {"channel": "form"}
         application.prepared = {**prepared, "url": job.apply_url, "resume": variant.pdf_path}
@@ -310,7 +388,10 @@ def prepare_application(
             {"kind": "manual", "detail": f"{why} Your tailored resume is ready to upload."}
         )
 
+    warnings = _sender_warnings(job, application.channel)
     warning = _ledger_warning(session, config, user, job, application.id, now)
+    if warning is not None:
+        warnings.append(warning)
     notes: list[str] = []
     if blockers:
         application.status = AppStatus.needs_human.value
@@ -320,14 +401,13 @@ def prepare_application(
             exclude_application_id=application.id,
         )  # fmt: skip
         notes = decision.reasons
-        if decision.allowed and warning is None:
+        if decision.allowed and not warnings:
             application.status = AppStatus.approved.value
             application.auto = True
             application.approved_at = now
         else:
             application.status = AppStatus.needs_review.value
-    if warning is not None:
-        blockers.append(warning)
+    blockers.extend(warnings)
     application.blockers = blockers
     application.prepared = {**application.prepared, "auto_notes": notes}
     add_event(
@@ -335,6 +415,37 @@ def prepare_application(
     )
     session.flush()
     return application
+
+
+def _sender_warnings(job: Job, channel: str) -> list[dict[str, str]]:
+    """Things to look at before replying to a role that arrived by email."""
+    if channel != Channel.email.value or not from_mail(job):
+        return []
+    raw = job.raw or {}
+    warnings: list[dict[str, str]] = []
+    if raw.get("sender_check_failed"):
+        warnings.append(
+            {
+                "kind": "sender_unverified",
+                "detail": (
+                    "Your mail provider marked this message as failing its sender checks, so "
+                    f"it may not really be from {job.contact_email}. Your reply, with your "
+                    "resume, would go to that address."
+                ),
+            }
+        )
+    reply_to = str(raw.get("reply_to") or "")
+    if reply_to:
+        warnings.append(
+            {
+                "kind": "reply_to",
+                "detail": (
+                    f"The message asks for replies to go to {reply_to}, but this draft is "
+                    f"addressed to the sender, {job.contact_email}. Check which is right."
+                ),
+            }
+        )
+    return warnings
 
 
 def _save_draft_instead(
@@ -418,6 +529,11 @@ def provide_answers(session: Session, application: Application, answers: dict[st
 
 def dismiss(application: Application, reason: str = "") -> None:
     """Decide not to apply."""
+    if application.status == AppStatus.unconfirmed.value:
+        raise ApplicationError(
+            "It is not known whether this went out. Check first, then mark it as sent or "
+            "prepare it again."
+        )
     if application.status in {s.value for s in SENT_STATUSES} | {AppStatus.submitting.value}:
         raise ApplicationError("This application has already gone out; mark it withdrawn instead.")
     application.status = AppStatus.skipped.value
@@ -438,9 +554,17 @@ def mark_submitted(
     """You sent it yourself (finished a form by hand, sent the draft). Record it."""
     if application.status in {s.value for s in SENT_STATUSES}:
         raise ApplicationError("This application is already recorded as sent.")
+    if application.status == AppStatus.submitting.value:
+        raise ApplicationError("This application is being sent right now; look again in a minute.")
     now = now or utcnow()
+    # Confirming a send the app started does not make it a manual one: it
+    # still counts against the unattended allowance it was sent under.
+    unattended = application.auto and application.status == AppStatus.unconfirmed.value
+    started = application.submitted_at if unattended else None
     _finish(session, config, application, now=now, confirmation=note or "Marked as sent by you.")
-    application.auto = False
+    application.auto = unattended
+    if started is not None:
+        application.submitted_at = started
     add_event(application, "marked_submitted", note=note)
 
 
@@ -515,6 +639,9 @@ def submit_application(
     interrupted send is surfaced for you to check instead of retried.
     """
     now = now or utcnow()
+    # The caller may hold a copy read a while ago; you may have dismissed it since.
+    session.flush()
+    session.refresh(application)
     if application.status != AppStatus.approved.value:
         raise ApplicationError(
             f"Only approved applications are sent (this one is {application.status})."
@@ -565,21 +692,6 @@ def _send_email(
     transport: MailTransport | None,
     now: datetime,
 ) -> str:
-    already = session.scalar(
-        select(OutboundEmail).where(
-            OutboundEmail.application_id == application.id, OutboundEmail.status == "sent"
-        )
-    )
-    if already is not None:  # belt and braces: one application, one email
-        _finish(
-            session,
-            config,
-            application,
-            now=already.sent_at or now,
-            confirmation=f"Sent to {already.to_addr}",
-        )
-        session.commit()
-        return application.status
     if transport is None:
         application.status = AppStatus.needs_human.value
         application.blockers = [{"kind": "no_smtp", "detail": "Outgoing mail is not configured."}]
@@ -610,28 +722,53 @@ def _send_email(
         status="queued",
     )
     session.add(outbound)
-    application.status = AppStatus.submitting.value
-    application.attempts += 1
-    session.commit()  # recorded as in flight before anything leaves
+    if not _claim(session, application, channel="email"):
+        return "deferred"  # another sender took it, or you changed it a moment ago
 
     try:
-        transport.send(message, mail.recipients())
-    except MailError as exc:
-        outbound.status = "failed"
-        outbound.error = str(exc)
-        return _fail(session, application, str(exc))
+        refused = transport.send(message, mail.recipients()) or []
+    except MailOutcomeUnknown as exc:
+        problem = str(exc)
 
-    outbound.status = "sent"
-    outbound.sent_at = now
-    _finish(
-        session,
-        config,
-        application,
-        now=now,
-        confirmation=f"Sent to {mail.to} (Message-ID {outbound.message_id})",
-    )
-    add_event(application, "submitted", channel="email", to=mail.to, auto=application.auto)
-    session.commit()
+        def unknown() -> None:
+            outbound.status = "unknown"
+            outbound.error = problem
+            outbound.sent_at = now
+            _mark_unconfirmed(
+                session,
+                application,
+                now=now,
+                why=(
+                    f"The email to {mail.to} was handed to the mail server, but {problem}. "
+                    "Check your sent mail, then mark it as sent or prepare it again."
+                ),
+            )
+
+        _settle(session, application, unknown)
+        return application.status
+    except MailError as exc:
+        problem = str(exc)
+
+        def failed() -> None:
+            outbound.status = "failed"
+            outbound.error = problem
+            _mark_failed(application, problem)
+
+        _settle(session, application, failed)
+        return application.status
+
+    confirmation = f"Sent to {mail.to} (Message-ID {outbound.message_id})"
+    if refused:
+        # The recruiter has it; only your own copy was turned away.
+        confirmation += f". The mail server refused the copy to {', '.join(refused)}."
+
+    def sent() -> None:
+        outbound.status = "sent"
+        outbound.sent_at = now
+        _finish(session, config, application, now=now, confirmation=confirmation)
+        add_event(application, "submitted", channel="email", to=mail.to, auto=application.auto)
+
+    _settle(session, application, sent)
     return application.status
 
 
@@ -644,21 +781,34 @@ def _send_form(
     client: PoliteClient | None,
     now: datetime,
 ) -> str:
+    job = application.job
     variant = application.resume_variant
-    url = (application.prepared or {}).get("url") or application.job.apply_url
+    approved = dict(application.prepared or {})
+    url = job.apply_url
+    hosts = form_hosts(job, settings)
     if variant is None or not variant.pdf_path or not Path(variant.pdf_path).exists() or not url:
         return _fail(
             session,
             application,
             "The tailored resume or the application address is missing; prepare it again.",
         )
+    if not hosts or approved.get("url") != url:
+        # What was approved was a plan for one particular address.
+        return _return_to_review(
+            session,
+            application,
+            {
+                "kind": "form_changed",
+                "detail": "The posting's application link changed after this was prepared. "
+                "Prepare it again to see the form as it is now.",
+            },
+        )
     book = AnswerBook(
         config.profile, load_answers(session, application.user_id), Path(variant.pdf_path)
     )
 
-    application.status = AppStatus.submitting.value
-    application.attempts += 1
-    session.commit()  # recorded as in flight before anything leaves
+    if not _claim(session, application, channel="form"):
+        return "deferred"  # another sender took it, or you changed it a moment ago
 
     try:
         outcome = filler.submit(
@@ -669,41 +819,132 @@ def _send_form(
             client=client,
             screenshot_dir=settings.screenshots_dir,
             label=f"application-{application.id}",
+            allowed_hosts=hosts,
+            expect_plan=approved.get("plan_hash"),
         )
     except BrowserUnavailable as exc:
-        return _fail(session, application, str(exc))
+        problem = str(exc)
+        _settle(session, application, lambda: _mark_failed(application, problem))
+        return application.status
 
-    prepared = dict(application.prepared or {})
-    if outcome.plan is not None:
-        prepared.update(outcome.plan.to_prepared())
-    prepared["screenshots"] = outcome.screenshots
-    application.prepared = prepared
-
-    if outcome.status == "submitted":
-        _finish(session, config, application, now=now, confirmation=outcome.confirmation)
+    def record() -> None:
+        prepared = dict(application.prepared or {})
         if outcome.plan is not None:
-            used = [p.field.key for p in outcome.plan.fill if p.resolution.source == "answer bank"]
-            count_uses(session, application.user_id, used)
-        add_event(application, "submitted", channel="form", auto=application.auto)
-    elif outcome.status == "needs_answers":
-        application.status = AppStatus.needs_answers.value
-        add_event(application, "needs_answers")
-    elif outcome.status == "needs_human":
-        application.status = AppStatus.needs_human.value
-        application.blockers = outcome.blockers
-        add_event(application, "needs_human", blockers=[b["kind"] for b in outcome.blockers])
-    else:
-        return _fail(session, application, outcome.error or "The form could not be submitted.")
+            prepared.update(outcome.plan.to_prepared())
+        # The address stays the one that was approved, whatever page the
+        # browser ended up on: nothing later may be pointed at a redirect target.
+        prepared["url"] = url
+        prepared["screenshots"] = outcome.screenshots
+        application.prepared = prepared
+
+        if outcome.status == "submitted":
+            _finish(session, config, application, now=now, confirmation=outcome.confirmation)
+            if outcome.plan is not None:
+                used = [
+                    planned.field.key
+                    for planned in outcome.plan.fill
+                    if planned.resolution.source == "answer bank"
+                ]
+                count_uses(session, application.user_id, used)
+            add_event(application, "submitted", channel="form", auto=application.auto)
+        elif outcome.status == "unconfirmed":
+            _mark_unconfirmed(session, application, now=now, why=outcome.error)
+        elif outcome.status == "changed":
+            application.status = AppStatus.needs_review.value
+            application.auto = False
+            application.blockers = outcome.blockers
+            add_event(application, "returned_to_review", reasons=["form changed"])
+        elif outcome.status == "needs_answers":
+            application.status = AppStatus.needs_answers.value
+            add_event(application, "needs_answers")
+        elif outcome.status == "needs_human":
+            application.status = AppStatus.needs_human.value
+            application.blockers = outcome.blockers
+            add_event(application, "needs_human", blockers=[b["kind"] for b in outcome.blockers])
+        else:
+            _mark_failed(application, outcome.error or "The form could not be submitted.")
+
+    _settle(session, application, record)
+    return application.status
+
+
+def _claim(session: Session, application: Application, *, channel: str) -> bool:
+    """Move ``approved -> submitting`` so that exactly one sender can do it.
+
+    The commit carries the row's version: if anyone changed the application
+    since it was read (another sender claimed it, you dismissed it), the
+    update matches nothing and this returns ``False`` with nothing sent.
+    The state is committed *before* anything leaves, so a crash can never
+    lead to a second send either: an interrupted one is surfaced, not retried.
+    """
+    application.status = AppStatus.submitting.value
+    application.attempts += 1
+    add_event(application, "sending", channel=channel, auto=application.auto)
+    try:
+        session.commit()
+    except StaleDataError:
+        session.rollback()
+        log.info("application %s was changed or claimed elsewhere; not sending", application.id)
+        return False
+    return True
+
+
+def _settle(session: Session, application: Application, change: Callable[[], None]) -> None:
+    """Record what happened to a send. It has happened, so the record must stick.
+
+    If the row was touched meanwhile (a note you saved), read it again and
+    apply the outcome on top.
+    """
+    for attempt in range(3):
+        change()
+        try:
+            session.commit()
+            return
+        except StaleDataError:
+            session.rollback()
+            if attempt == 2:
+                raise
+            session.refresh(application)
+
+
+def _return_to_review(session: Session, application: Application, blocker: dict[str, str]) -> str:
+    application.status = AppStatus.needs_review.value
+    application.auto = False
+    application.blockers = [blocker]
+    add_event(application, "returned_to_review", reasons=[blocker["kind"]])
     session.commit()
     return application.status
 
 
-def _fail(session: Session, application: Application, error: str) -> str:
+def _mark_failed(application: Application, error: str) -> None:
     application.status = AppStatus.failed.value
     application.error = error
     add_event(application, "failed", error=error)
+
+
+def _fail(session: Session, application: Application, error: str) -> str:
+    _mark_failed(application, error)
     session.commit()
     return application.status
+
+
+def _mark_unconfirmed(
+    session: Session, application: Application, *, now: datetime, why: str
+) -> None:
+    """The send was started and nothing says whether it arrived.
+
+    From here on it is treated as sent wherever that is the careful reading:
+    it uses up the sending allowances, it blocks a second application for the
+    role, and it gets a ledger line so that another route to the same client
+    is flagged. It is never sent again by the app; you check and decide.
+    """
+    application.status = AppStatus.unconfirmed.value
+    application.submitted_at = now
+    application.error = why
+    application.follow_up_at = None
+    application.next_action = "Check whether this went out"
+    ledger.record(session, application, now=now, notes=ledger.UNCONFIRMED_NOTE)
+    add_event(application, "unconfirmed", detail=why)
 
 
 def recover_interrupted(session: Session, *, now: datetime | None = None) -> int:
@@ -716,10 +957,14 @@ def recover_interrupted(session: Session, *, now: datetime | None = None) -> int
         )
     ).all()
     for application in stuck:
-        application.status = AppStatus.failed.value
-        application.error = (
-            "Sending was interrupted and it is not known whether this went out. Check your sent "
-            "mail (or the site) and then either mark it as sent or prepare it again."
+        _mark_unconfirmed(
+            session,
+            application,
+            now=application.updated_at,
+            why=(
+                "Sending was interrupted and it is not known whether this went out. Check your "
+                "sent mail (or the site) and then either mark it as sent or prepare it again."
+            ),
         )
         add_event(application, "interrupted")
     return len(stuck)

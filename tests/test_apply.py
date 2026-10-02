@@ -122,12 +122,18 @@ def vendor_job(
     *,
     vendor: str = "Odyssey Staffing",
     client: str = "Southwind Air",
+    typed: bool = False,
     **fields,
 ) -> Job:
-    """A contract requirement that arrived by email from a staffing vendor."""
-    source = session.scalar(select(Source).where(Source.kind == "email")) or make_source(
-        session, "email"
-    )
+    """A contract requirement from a staffing vendor.
+
+    By default one that arrived by email; ``typed`` makes it one you entered
+    yourself (the only kind of vendor role that may ever go out unattended).
+    """
+    kind = "manual" if typed else "email"
+    source = session.scalar(select(Source).where(Source.kind == kind)) or make_source(session, kind)
+    if typed:
+        fields.setdefault("raw", {"vendor": True})
     values = {
         "title": "Cloud Architect",
         "company": vendor,
@@ -313,9 +319,10 @@ def test_compose_reply_to_a_vendor(
     assert draft.subject == "Re: Urgent requirement: Cloud Architect (Remote)"
     assert draft.in_reply_to == "<req-1@odyssey.example>"
     assert draft.attachments == [variant.pdf_path]
-    assert draft.body.startswith(
-        "Hi Sai,\n\nI am interested in the Cloud Architect role with Southwind Air."
-    )
+    # The title and client of an emailed role are the sender's words, so the
+    # reply does not repeat them in your voice.
+    assert draft.body.startswith("Hi Sai,\n\nThank you for sending this role. I am interested.")
+    assert "Southwind Air" not in draft.body and "Cloud Architect role" not in draft.body
     assert "I am a Cloud and Kubernetes Architect with 15 years of experience." in draft.body
     # skills come from the resume's skill groups only; "migration" is a tag, not a skill
     assert "my strongest areas are AWS, Terraform, Kubernetes." in draft.body
@@ -603,7 +610,7 @@ def test_email_application_review_approve_send(
     )
     outbound = session.scalar(select(OutboundEmail))
     assert outbound.status == "sent" and outbound.message_id == message["Message-ID"]
-    assert events(application) == ["prepared", "approved", "submitted"]
+    assert events(application) == ["prepared", "approved", "sending", "submitted"]
 
     # Approving or sending again is refused: one application, one email.
     with pytest.raises(ApplicationError):
@@ -661,8 +668,9 @@ def test_auto_mode_sends_unattended_and_ledger_stops_the_second_vendor(
 ) -> None:
     transport = make_transport(settings)
     first = prepare_application(
-        session, settings, auto_config, user, vendor_job(session, user), browser=lazy, now=NOW
-    )
+        session, settings, auto_config, user, vendor_job(session, user, typed=True),
+        browser=lazy, now=NOW,
+    )  # fmt: skip
     assert first.status == "approved" and first.auto is True
     assert (
         submit_application(
@@ -673,7 +681,7 @@ def test_auto_mode_sends_unattended_and_ledger_stops_the_second_vendor(
 
     rival = vendor_job(
         session, user, vendor="Insight Global", title="Cloud Platform Architect",
-        contact_email="pat@insight.example", contact_name="Pat", raw={},
+        contact_email="pat@insight.example", contact_name="Pat", typed=True,
     )  # fmt: skip
     second = prepare_application(
         session, settings, auto_config, user, rival, browser=lazy, now=NOW + timedelta(hours=1)
@@ -687,7 +695,7 @@ def test_auto_mode_sends_unattended_and_ledger_stops_the_second_vendor(
 
     unnamed = vendor_job(
         session, user, vendor="TekVendor", client="", title="DevOps Architect",
-        contact_email="r@tek.example", raw={},
+        contact_email="r@tek.example", typed=True,
     )  # fmt: skip
     third = prepare_application(
         session, settings, auto_config, user, unnamed, browser=lazy, now=NOW + timedelta(hours=1)
@@ -710,8 +718,9 @@ def test_auto_rules_are_rechecked_at_send_time(
     smtp_server: CapturedMail,
 ) -> None:
     application = prepare_application(
-        session, settings, auto_config, user, vendor_job(session, user), browser=lazy, now=NOW
-    )
+        session, settings, auto_config, user, vendor_job(session, user, typed=True),
+        browser=lazy, now=NOW,
+    )  # fmt: skip
     assert application.status == "approved"
     auto_config.search.policy.auto.min_score = 99  # the bar moved before it went out
     result = submit_application(
@@ -900,7 +909,10 @@ def test_interrupted_sends_are_surfaced_not_retried(session: Session, user: User
     stuck.updated_at = NOW - timedelta(hours=1)
     session.flush()
     assert recover_interrupted(session, now=NOW) == 1
-    assert stuck.status == "failed" and "not known whether this went out" in stuck.error
+    assert stuck.status == "unconfirmed" and "not known whether this went out" in stuck.error
+    # It counts as possibly sent: dated, and on the ledger as a guard.
+    assert stuck.submitted_at == NOW - timedelta(hours=1)
+    assert session.scalar(select(LedgerEntry)).notes == ledger.UNCONFIRMED_NOTE
 
 
 def test_dismiss_and_stage_changes(session: Session, user: User, user_config: UserConfig) -> None:
@@ -1118,7 +1130,7 @@ def test_auto_mode_submits_a_clean_form_unattended(
 
 
 @pytest.mark.browser
-def test_unconfirmed_form_submission_is_failed_and_not_retried(
+def test_unconfirmed_form_submission_is_flagged_counted_and_not_retried(
     session: Session, user: User, user_config: UserConfig, settings: Settings, lazy: LazyBrowser,
     form_server: FormServer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:  # fmt: skip
@@ -1133,15 +1145,22 @@ def test_unconfirmed_form_submission_is_failed_and_not_retried(
         submit_application(
             session, settings, user_config, application, transport=None, browser=lazy, now=NOW
         )
-        == "failed"
+        == "unconfirmed"
     )
-    assert "did not confirm" in application.error and application.submitted_at is None
-    assert session.scalar(select(LedgerEntry)) is None
-    with pytest.raises(ApplicationError):  # a failed application is never sent again by itself
+    assert "did not confirm" in application.error and application.submitted_at == NOW
+    entry = session.scalar(select(LedgerEntry))
+    assert entry.notes == ledger.UNCONFIRMED_NOTE and entry.client_name == "Acme Robotics"
+    with pytest.raises(ApplicationError):  # never sent again by itself
         submit_application(
             session, settings, user_config, application, transport=None, browser=lazy, now=NOW
         )
+    with pytest.raises(ApplicationError):  # and not something to wave away unchecked
+        dismiss(application)
     assert len(form_server.posts()) == 1
+
+    # You looked, and it had arrived: recorded as sent, the ledger line stands.
+    mark_submitted(session, user_config, application, now=NOW + timedelta(hours=1))
+    assert application.status == "submitted" and entry.notes == ""
 
 
 @pytest.mark.browser

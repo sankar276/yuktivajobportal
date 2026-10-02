@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from jobportal.apply import ledger
+from jobportal.apply.policy import WENT_OUT
 from jobportal.apply.service import add_event
 from jobportal.config import UserConfig
 from jobportal.crawl import special_source
@@ -60,7 +62,7 @@ def _our_message(session: Session, mail: ParsedMail) -> OutboundEmail | None:
     if ids:
         found = session.scalars(
             select(OutboundEmail).where(
-                OutboundEmail.message_id.in_(ids), OutboundEmail.status == "sent"
+                OutboundEmail.message_id.in_(ids), OutboundEmail.status.in_(WENT_OUT)
             )
         ).first()
         if found is not None:
@@ -69,7 +71,7 @@ def _our_message(session: Session, mail: ParsedMail) -> OutboundEmail | None:
         # Bounces quote the original instead of threading to it.
         for outbound in session.scalars(
             select(OutboundEmail)
-            .where(OutboundEmail.status == "sent")
+            .where(OutboundEmail.status.in_(WENT_OUT))
             .order_by(OutboundEmail.id.desc())
             .limit(200)
         ):
@@ -102,10 +104,18 @@ def process_message(
     mail: ParsedMail,
     stats: InboxStats,
     now: datetime,
+    *,
+    own_addresses: Iterable[str] = (),
 ) -> None:
-    own = {config.profile.email.lower()}
+    """File one message. ``own_addresses`` are further addresses you send from."""
+    own = {config.profile.email.lower(), *(a.lower() for a in own_addresses if a)}
     if not mail.message_id or mail.from_addr in own:
         stats.ignored += 1  # our own blind copies come back through the inbox
+        return
+    if session.scalar(
+        select(OutboundEmail.id).where(OutboundEmail.message_id == mail.message_id[:255])
+    ):
+        stats.ignored += 1  # something we sent ourselves, whatever address it shows
         return
     if session.scalar(
         select(InboundEmail.id).where(
@@ -120,9 +130,17 @@ def process_message(
         application = session.get(Application, ours.application_id)
         if application is not None:
             if mail.is_bounce:
-                application.status = AppStatus.failed.value
-                application.error = f"The email to {ours.to_addr} bounced: {mail.subject}"
-                application.follow_up_at = None
+                # Only an application still waiting on that email goes back to
+                # "did not go through". One that has moved on (a reply, an
+                # interview) stays where you put it; the bounce is just noted.
+                if application.status in (
+                    AppStatus.submitted.value,
+                    AppStatus.unconfirmed.value,
+                ):
+                    application.status = AppStatus.failed.value
+                    application.error = f"The email to {ours.to_addr} bounced: {mail.subject}"
+                    application.follow_up_at = None
+                    ours.status = "bounced"
                 add_event(application, "bounced", subject=mail.subject)
                 _record(session, user, mail, "bounce", application_id=application.id)
                 stats.bounces += 1
@@ -132,7 +150,13 @@ def process_message(
                 _record(session, user, mail, "auto_reply", application_id=application.id)
                 stats.ignored += 1
                 return
-            if application.status == AppStatus.submitted.value:
+            if application.status in (AppStatus.submitted.value, AppStatus.unconfirmed.value):
+                if application.status == AppStatus.unconfirmed.value:
+                    # A reply settles it: the message did arrive.
+                    application.error = ""
+                    ledger.confirm(session, application)
+                    if ours.status == "unknown":
+                        ours.status = "sent"
                 application.status = AppStatus.replied.value
                 application.follow_up_at = None
                 application.next_action = f"Reply to {mail.from_name or mail.from_addr}"
@@ -167,7 +191,8 @@ def process_message(
         employment_type=requirement.employment_type,
         description_text=requirement.description,
         url="",
-        posted_at=mail.date or now,
+        # The Date header is the sender's claim: never let it run ahead of the clock.
+        posted_at=min(mail.date, now) if mail.date else now,
         first_seen_at=now,
         last_seen_at=now,
         comp_min=comp.minimum if comp else None,
@@ -186,6 +211,9 @@ def process_message(
             "message_id": mail.message_id,
             "references": squash(" ".join([*mail.references, mail.message_id])),
             "duration": requirement.duration,
+            # Shown as warnings when the reply is prepared; see apply.service.
+            "sender_check_failed": mail.auth_failed,
+            "reply_to": mail.reply_to,
         },
     )
     job.workplace = job.facts.get("workplace")
@@ -226,19 +254,24 @@ def ingest_inbox(
         source.last_error = None
         session.commit()
 
+    own = [settings.mail_from or ""]
     for uid, raw in fetched.messages:
         stats.read += 1
         last_uid = max(last_uid or 0, uid)
+        # The position is saved before the message is looked at, so a message
+        # that crashes or hangs the process is not read again on restart.
+        remember(last_uid)
         try:
             if raw:
-                process_message(session, config, user, parse_message(raw), stats, now)
+                process_message(
+                    session, config, user, parse_message(raw), stats, now, own_addresses=own
+                )
+                session.commit()
             else:
                 stats.ignored += 1
-            remember(last_uid)
         except Exception:
             session.rollback()
             log.exception("could not process message uid %s", uid)
             stats.ignored += 1
-            remember(last_uid)
     remember(last_uid)
     return stats

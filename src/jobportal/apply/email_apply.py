@@ -13,11 +13,12 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from jobportal.config import Employment, Profile
-from jobportal.models import Job, ResumeVariant
+from jobportal.models import Job, ResumeVariant, SourceKind
 from jobportal.text import canonical, squash
 
 _ENGAGEMENT_LABELS = {"c2c": "C2C", "w2": "W2", "1099": "1099", "fte": "full-time"}
 MAX_SKILLS_IN_PITCH = 6
+MAX_SUBJECT = 200
 
 
 @dataclass
@@ -49,20 +50,31 @@ def _greeting(job: Job) -> str:
 
 
 def _subject(job: Job, profile: Profile) -> str:
-    original = squash((job.raw or {}).get("subject"))
+    original = squash((job.raw or {}).get("subject"))[:MAX_SUBJECT]
     if original:
         return original if re.match(r"re:", original, re.IGNORECASE) else f"Re: {original}"
     requisition = f" ({job.requisition_id})" if job.requisition_id else ""
-    return f"{job.title}{requisition} - {profile.name}"
+    return f"{job.title}{requisition} - {profile.name}"[:MAX_SUBJECT]
+
+
+def from_mail(job: Job) -> bool:
+    """Did this role arrive as an email (rather than from a board or from you)?"""
+    return job.source.kind == SourceKind.email.value
 
 
 def _pitch(job: Job, profile: Profile, variant: ResumeVariant) -> str:
     headline = squash((variant.content or {}).get("headline")) or profile.current_title
-    opener = "I am interested in the"
-    role = f"{job.title} role"
-    if job.client_name:
-        role += f" with {job.client_name}"
-    sentences = [f"{opener} {role}."]
+    if from_mail(job):
+        # The title and client of an emailed role are the sender's words. They
+        # are never repeated in your voice: a crafted message could otherwise
+        # put its own sentence into a reply you sign. The reply is threaded to
+        # their message, which says which role it is about.
+        sentences = ["Thank you for sending this role. I am interested."]
+    else:
+        role = f"{job.title} role"
+        if job.client_name:
+            role += f" with {job.client_name}"
+        sentences = [f"I am interested in the {role}."]
 
     if headline:
         article = "an" if headline[0].lower() in "aeiou" else "a"

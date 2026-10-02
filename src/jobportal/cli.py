@@ -396,10 +396,20 @@ def approve(
             query = query.where(Application.id.in_(ids or []))
         rows = session.scalars(query).all()
         for application in rows:
+            label = f"#{application.id} {application.job.title} - {application.job.company_name}"
+            warnings = [str(b.get("detail", "")) for b in application.blockers or []]
+            if warnings and everything:
+                # A warning (a possible double submission, an unverified
+                # sender) is overridden one application at a time, by number.
+                typer.secho(f"left for you  {label}", fg=typer.colors.YELLOW)
+                for warning in warnings:
+                    typer.echo(f"    {warning}")
+                typer.echo(f"    To send it anyway: jobportal approve {application.id}")
+                continue
             service.approve(application)
-            typer.echo(
-                f"approved #{application.id} {application.job.title} - {application.job.company_name}"
-            )
+            typer.echo(f"approved {label}")
+            for warning in warnings:
+                typer.secho(f"    approved despite: {warning}", fg=typer.colors.YELLOW)
         if not rows:
             typer.echo("Nothing matching is waiting for review.")
 

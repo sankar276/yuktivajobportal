@@ -16,6 +16,10 @@ from sqlalchemy.orm import Session
 from jobportal.models import Application, Job, LedgerEntry, SourceKind
 from jobportal.text import company_key
 
+#: Marks a line written for a send whose outcome is not known. It guards
+#: against a second route to the same client just like a confirmed line.
+UNCONFIRMED_NOTE = "Unconfirmed: it is not known whether this arrived."
+
 
 def is_vendor_role(job: Job) -> bool:
     """A requirement that reached you through a staffing vendor, not the employer."""
@@ -67,6 +71,11 @@ def find_conflict(
 def describe(entry: LedgerEntry) -> str:
     via = f"through {entry.vendor_name}" if entry.vendor_name else "directly"
     role = f" for '{entry.role_title}'" if entry.role_title else ""
+    if entry.notes == UNCONFIRMED_NOTE:
+        return (
+            f"An application to {entry.client_name} {via}{role} was started on "
+            f"{entry.submitted_at:%d %b %Y} and it is not known whether it arrived."
+        )
     return f"You were already submitted to {entry.client_name} {via} on {entry.submitted_at:%d %b %Y}{role}."
 
 
@@ -100,6 +109,28 @@ def record(
     entry.submitted_at = now
     if notes:
         entry.notes = notes
+    elif entry.notes == UNCONFIRMED_NOTE:
+        entry.notes = ""  # it is confirmed now
     session.add(entry)
     session.flush()
     return entry
+
+
+def confirm(session: Session, application: Application) -> None:
+    """An unconfirmed send turned out to have arrived: drop the "not known" mark."""
+    for entry in session.scalars(
+        select(LedgerEntry).where(
+            LedgerEntry.application_id == application.id, LedgerEntry.notes == UNCONFIRMED_NOTE
+        )
+    ):
+        entry.notes = ""
+
+
+def forget_unconfirmed(session: Session, application: Application) -> None:
+    """An unconfirmed send turned out *not* to have arrived: remove its line."""
+    for entry in session.scalars(
+        select(LedgerEntry).where(
+            LedgerEntry.application_id == application.id, LedgerEntry.notes == UNCONFIRMED_NOTE
+        )
+    ):
+        session.delete(entry)

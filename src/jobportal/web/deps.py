@@ -30,6 +30,7 @@ STATUS_LABELS = {
     AppStatus.submitting.value: "Sending",
     AppStatus.needs_human.value: "Yours to finish",
     AppStatus.failed.value: "Did not go through",
+    AppStatus.unconfirmed.value: "Not known whether it went out",
     AppStatus.skipped.value: "Not applying",
     AppStatus.submitted.value: "Sent",
     AppStatus.replied.value: "Reply received",

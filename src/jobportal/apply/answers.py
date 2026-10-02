@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from jobportal.apply.forms.fields import (
     DECLINE,
+    LEGAL_KINDS,
     FieldKind,
     FormField,
     Resolution,
@@ -58,7 +59,9 @@ class AnswerBook:
         candidates: list[tuple[str, str]] = []
         if kind is not FieldKind.question:
             value = profile_value(kind, self.profile)
-            if value:
+            # A legal question is answered from the profile only by picking a
+            # plain Yes or No; it is never typed into a free-text box.
+            if value and not (kind in LEGAL_KINDS and not form_field.options):
                 candidates.append((value, "profile"))
         stored = self.stored.get(form_field.key)
         if stored:

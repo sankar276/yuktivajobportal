@@ -7,7 +7,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm.exc import StaleDataError
 
 from jobportal.apply import service
 from jobportal.apply.service import ApplicationError
@@ -20,6 +21,11 @@ from jobportal.web.deps import back, config_dep, db, flash, render, settings_dep
 
 router = APIRouter()
 
+CHANGED_MEANWHILE = (
+    "This application changed while you were looking at it, so nothing was done. "
+    "Have another look and try again."
+)
+
 
 def _application_or_404(session: Session, user: User, application_id: int) -> Application:
     application = session.get(Application, application_id)
@@ -30,12 +36,22 @@ def _application_or_404(session: Session, user: User, application_id: int) -> Ap
 
 def _do(request: Request, action: object, success: str, application: Application) -> Response:
     """Run an action; show its result or the reason it is not allowed."""
+    application_id = application.id
+    session = object_session(application)
     try:
         action()  # type: ignore[operator]
+        if session is not None:
+            session.flush()  # a clash with the worker shows up here, not after the reply
         flash(request, success)
     except ApplicationError as exc:
         flash(request, str(exc), "error")
-    return back(request, f"/applications/{application.id}")
+    except StaleDataError:
+        # The worker (or another tab) changed this application after the page
+        # was loaded. Nothing is written on top of that.
+        if session is not None:
+            session.rollback()
+        flash(request, CHANGED_MEANWHILE, "error")
+    return back(request, f"/applications/{application_id}")
 
 
 @router.get("/queue")
@@ -196,22 +212,9 @@ def retry(
 ) -> Response:
     application = _application_or_404(session, user, application_id)
 
-    def action() -> None:
-        allowed = {
-            AppStatus.failed.value,
-            AppStatus.needs_human.value,
-            AppStatus.skipped.value,
-            AppStatus.needs_answers.value,
-        }
-        if application.status not in allowed:
-            raise ApplicationError(
-                "This application cannot be prepared again from its current state."
-            )
-        application.status = AppStatus.preparing.value
-        application.error = ""
-        service.add_event(application, "requested_again")
-
-    return _do(request, action, "Preparing it again.", application)
+    return _do(
+        request, lambda: service.retry(session, application), "Preparing it again.", application
+    )
 
 
 @router.post("/applications/{application_id}/mark-submitted")
@@ -260,10 +263,12 @@ def notes(
     user: User = Depends(user_dep),
 ) -> Response:
     application = _application_or_404(session, user, application_id)
-    application.notes = notes.strip()[:5000]
-    application.next_action = next_action.strip()[:300]
-    flash(request, "Notes saved.")
-    return back(request, f"/applications/{application.id}")
+
+    def action() -> None:
+        application.notes = notes.strip()[:5000]
+        application.next_action = next_action.strip()[:300]
+
+    return _do(request, action, "Notes saved.", application)
 
 
 # ------------------------------------------------------------------- files

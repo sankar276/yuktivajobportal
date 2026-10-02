@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm.exc import StaleDataError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -15,7 +16,7 @@ from jobportal import __version__
 from jobportal.db import get_session_factory, init_db
 from jobportal.settings import Settings, get_settings
 from jobportal.web import queries
-from jobportal.web.deps import STATIC_DIR, ConfigProblem, build_templates
+from jobportal.web.deps import STATIC_DIR, ConfigProblem, back, build_templates, flash
 from jobportal.web.routes import admin, applications, feed
 from jobportal.web.security import GuardMiddleware, LoginLimiter, session_secret
 from jobportal.worker import Worker, start_in_thread
@@ -81,6 +82,12 @@ def create_app(settings: Settings | None = None, *, worker_minutes: int | None =
             {"problem": str(exc), "data_dir": settings.data_dir.resolve()},
             status_code=503,
         )
+
+    @app.exception_handler(StaleDataError)
+    async def changed_meanwhile(request: Request, _exc: StaleDataError) -> Response:
+        # Two writers met on one application; the later one (this request) loses.
+        flash(request, applications.CHANGED_MEANWHILE, "error")
+        return back(request, "/queue")
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> Response:

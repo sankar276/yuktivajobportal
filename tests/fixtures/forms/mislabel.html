@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Apply - Senior SAP Engineer</title>
+<style>.field{margin:10px 0} label{display:block} .hp{position:absolute;left:-9999px} .fade{opacity:0;height:1px;overflow:hidden}</style></head>
+<body><h1>Senior SAP Engineer</h1>
+<form action="/submit" method="post" enctype="multipart/form-data">
+ <div class="field"><label for="name">Full name *</label><input id="name" name="name" required></div>
+ <div class="field"><label for="email">Email *</label><input id="email" type="email" name="email" required></div>
+ <div class="field"><label for="resume">Resume/CV *</label><input id="resume" type="file" name="resume" required></div>
+ <div class="field"><label for="resume_link">Link to resume</label><input id="resume_link" type="text" name="resume_link"></div>
+ <div class="field"><label for="sap">How many years of experience do you have with SAP? *</label><input id="sap" type="number" name="sap_years" required></div>
+ <div class="field"><label for="ref_email">Referrer's email</label><input id="ref_email" type="text" name="referrer_email"></div>
+ <div class="section">
+   <div class="field"><label for="auth">Are you legally authorized to work in the United States? *</label>
+     <select id="auth" name="authorized" required><option value="">Select</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+   <div class="field"><p class="prompt">Will you now or in the future require visa sponsorship to work in the United States?</p>
+     <select id="spon" name="needs_sponsorship" required><option value="">Select</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+ </div>
+ <fieldset><legend>Can you confirm you have no restrictive covenant (non-compete) with a current employer? *</legend>
+   <label><input type="radio" name="noncompete" value="no_covenant" required checked> I confirm</label>
+   <label><input type="radio" name="noncompete" value="has_covenant"> I have one</label></fieldset>
+ <div class="field"><label><input type="checkbox" name="share_with_partners" value="1" checked> Share my profile with partner companies and recruiters</label></div>
+ <!-- honeypots: invisible to a person, visible to the scan -->
+ <div class="hp"><label for="hp1">Company</label><input id="hp1" type="text" name="company_hp" tabindex="-1" autocomplete="off"></div>
+ <div class="fade"><label for="hp2">Confirm email</label><input id="hp2" type="email" name="email_confirm_hp" tabindex="-1" autocomplete="off"></div>
+ <fieldset style="display:none"><legend>Gender</legend>
+   <label><input type="radio" name="hp_gender" value="m"> Male</label>
+   <label><input type="radio" name="hp_gender" value="f"> Female</label>
+   <label><input type="radio" name="hp_gender" value="declined"> Decline to self identify</label></fieldset>
+ <button type="submit">Submit application</button>
+</form></body></html>

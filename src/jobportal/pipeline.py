@@ -14,9 +14,11 @@ from functools import partial
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from jobportal.apply.mail import MailTransport, SmtpTransport
 from jobportal.apply.service import (
+    ApplicationError,
     prepare_application,
     recover_interrupted,
     submit_application,
@@ -27,6 +29,7 @@ from jobportal.crawl import CrawlResult, crawl
 from jobportal.db import utcnow
 from jobportal.http import PoliteClient
 from jobportal.llm import LLM
+from jobportal.locks import sender_lock
 from jobportal.models import Application, AppStatus, Decision, Job, JobScore
 from jobportal.scoring import ScoreStats, score_jobs, search_terms, title_matches_any_lane
 from jobportal.settings import Settings
@@ -158,6 +161,11 @@ def prepare_pending(
             )
             session.commit()
             summary.prepared[application.status] = summary.prepared.get(application.status, 0) + 1
+        except StaleDataError:
+            # You (or another process) changed this application while it was
+            # being prepared: your change stands and this work is dropped.
+            session.rollback()
+            log.info("application for job %s changed during preparation; left as it is", job.id)
         except Exception as exc:  # one bad posting must not stop the run
             session.rollback()
             log.exception("preparing job %s failed", job.id)
@@ -176,33 +184,44 @@ def send_approved(
     now: datetime,
 ) -> None:
     user = get_default_user(session, config.profile)
-    approved = session.scalars(
-        select(Application)
-        .where(Application.user_id == user.id, Application.status == AppStatus.approved.value)
-        .order_by(Application.approved_at, Application.id)
-    ).all()
-    mail_paused = False
-    for application in approved:
-        if mail_paused and application.channel == "email":
-            summary.deferred += 1
-            continue
-        try:
-            result = submit_application(
-                session, settings, config, application,
-                transport=transport, browser=browser, client=client, now=now,
-            )  # fmt: skip
-        except Exception as exc:
-            session.rollback()
-            log.exception("sending application %s failed", application.id)
-            summary.errors.append(f"Sending application #{application.id}: {exc}")
-            continue
-        if result == "deferred":
-            summary.deferred += 1
-            mail_paused = True  # the throttle applies to every further email this round
-        elif result == AppStatus.submitted.value:
-            summary.sent += 1
-        else:
-            summary.not_sent[result] = summary.not_sent.get(result, 0) + 1
+    with sender_lock(settings.data_dir) as mine:
+        if not mine:
+            log.info("another process is sending right now; leaving this round to it")
+            return
+        approved = session.scalars(
+            select(Application)
+            .where(Application.user_id == user.id, Application.status == AppStatus.approved.value)
+            .order_by(Application.approved_at, Application.id)
+        ).all()
+        mail_paused = False
+        for application in approved:
+            if mail_paused and application.channel == "email":
+                summary.deferred += 1
+                continue
+            application_id = application.id
+            try:
+                result = submit_application(
+                    session, settings, config, application,
+                    transport=transport, browser=browser, client=client, now=now,
+                )  # fmt: skip
+            except ApplicationError:
+                # No longer approved by the time its turn came (you dismissed
+                # it, or it was sent from elsewhere): nothing to do.
+                session.rollback()
+                continue
+            except Exception as exc:
+                session.rollback()
+                log.exception("sending application %s failed", application_id)
+                summary.errors.append(f"Sending application #{application_id}: {exc}")
+                continue
+            if result == "deferred":
+                summary.deferred += 1
+                if application.channel == "email":
+                    mail_paused = True  # the throttle applies to every further email this round
+            elif result == AppStatus.submitted.value:
+                summary.sent += 1
+            else:
+                summary.not_sent[result] = summary.not_sent.get(result, 0) + 1
 
 
 def run_once(

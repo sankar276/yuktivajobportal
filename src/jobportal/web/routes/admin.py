@@ -192,7 +192,7 @@ def sources_check_now(request: Request) -> Response:
             "error",
         )
     else:
-        worker.last_crawl = None
+        worker.request_crawl()
         flash(request, "Reading the boards now. New roles appear in the feed in a minute or two.")
     return back(request, "/sources")
 

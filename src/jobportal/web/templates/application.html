@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ job.title }} at {{ job.company_name }}{% endblock %}
 {% block content %}
-{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed") %}
+{% set waiting = ("needs_answers", "needs_review", "needs_human", "failed", "unconfirmed") %}
 <div class="page-head">
   <div>
     <h1>{{ job.title }}</h1>
@@ -87,7 +87,7 @@
         <button type="submit">Save notes</button>
       </form>
     </section>
-    {% if not sent and application.status not in ("skipped", "submitting") %}
+    {% if not sent and application.status not in ("skipped", "submitting", "unconfirmed") %}
     <section>
       <form method="post" action="/applications/{{ application.id }}/dismiss"><button class="danger" type="submit">Do not apply</button></form>
     </section>

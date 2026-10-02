@@ -49,6 +49,7 @@
           <label class="check"><input type="checkbox" name="answer:{{ question.key }}" value="{{ option }}"> {{ option }}</label>
           {% endfor %}
         </fieldset>
+        {% if question.current %}<p class="soft small">The site has pre-selected: {{ question.current }}. It is only sent if you choose it here.</p>{% endif %}
         {% else %}
         <label for="{{ field_id }}">{{ question.label }}</label>
         {% if question.type == "checkbox" %}
@@ -63,6 +64,7 @@
         {% else %}
         <input id="{{ field_id }}" name="answer:{{ question.key }}" type="text">
         {% endif %}
+        {% if question.current %}<p class="soft small">The site has pre-filled: {{ question.current }}. It is only sent if you give it as your answer here.</p>{% endif %}
         {% endif %}
       </div>
       {% endfor %}
@@ -102,6 +104,7 @@
       <p class="small">
         {% set link = prepared.get("url") or job.apply_url or job.url %}
         {% if link and application.channel != "email" %}<a href="{{ link }}" target="_blank" rel="noopener noreferrer">Open the application page</a>{% endif %}
+        {% if status == "unconfirmed" and prepared.get("screenshots") %} <a href="/applications/{{ application.id }}/screenshot/{{ prepared.get("screenshots") | length - 1 }}" target="_blank" rel="noopener">See the page after submitting</a>{% endif %}
         {% if application.resume_variant %} <a href="/applications/{{ application.id }}/resume.pdf">Download your tailored resume</a>{% endif %}
         {% if prepared.get("draft_file") %} <a href="/applications/{{ application.id }}/draft.eml">Download the email draft</a>{% endif %}
       </p>
@@ -115,14 +118,21 @@
       <p class="soft small">On your own computer, <code>jobportal assist {{ application.id }}</code> opens this form in a browser with your answers filled in, for you to check and submit.</p>
       {% endif %}
       <div class="item-acts">
+        {% if status == "unconfirmed" %}
+        <form method="post" action="/applications/{{ application.id }}/mark-submitted"><button class="primary" type="submit">It went through</button></form>
+        <form method="post" action="/applications/{{ application.id }}/retry"><button type="submit">It did not: prepare again</button></form>
+        {% else %}
         <form method="post" action="/applications/{{ application.id }}/mark-submitted"><button class="primary" type="submit">I sent it</button></form>
         <form method="post" action="/applications/{{ application.id }}/retry"><button type="submit">Prepare again</button></form>
+        {% endif %}
       </div>
     {% endif %}
 
+    {% if status != "unconfirmed" %}
     <div class="item-acts">
       <form method="post" action="/applications/{{ application.id }}/dismiss"><button class="quiet" type="submit">Do not apply</button></form>
     </div>
+    {% endif %}
   </article>
   {% endfor %}
 </section>

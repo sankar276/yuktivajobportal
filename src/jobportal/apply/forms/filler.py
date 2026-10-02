@@ -9,15 +9,20 @@ Three modes, in increasing order of trust:
              with anything the filler cannot handle.
 ``submit``   Unattended: fill and submit. Refused unless the form has no bot
              check, no login wall, no unanswered required question and no
-             control the filler cannot operate.
+             control the filler cannot operate, and unless the form is still
+             what was approved.
 
 The browser is not disguised and bot checks are never worked around: a form
 that runs one is yours to submit. A submission only counts as sent when the
-site confirms it.
+site plainly confirms it; a click with no confirmation is reported as
+``unconfirmed`` (it may have gone through), never as sent and never as
+"nothing happened".
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import time
@@ -27,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Browser, Page, Request, Route
+from playwright.sync_api import Browser, BrowserContext, Page, Request, Route
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -42,14 +47,27 @@ log = logging.getLogger(__name__)
 SCAN_JS = (Path(__file__).parent / "scan.js").read_text(encoding="utf-8")
 NAVIGATION_TIMEOUT_MS = 30_000
 OUTCOME_TIMEOUT_S = 25.0
+# Wording that says *this application* arrived. A bare "thank you" is not
+# enough: forms say that in their introductions and on error pages too.
 _CONFIRM_RE = re.compile(
-    r"thank you|thanks for (?:applying|your (?:application|interest))"
-    r"|application (?:has been|was|is) (?:received|submitted|sent)"
-    r"|we(?:'ve| have) received your application|successfully (?:submitted|applied)"
-    r"|application (?:submitted|received|complete)|your application is on its way",
+    r"thank(?:s| you) for (?:applying|your application|submitting your application)"
+    r"|(?:your )?application (?:has been|was|is) (?:successfully )?(?:received|submitted|sent)"
+    r"|we(?:'ve| have) (?:successfully )?received your application"
+    r"|(?:you(?:'ve| have) )?successfully (?:submitted|applied)"
+    r"|application (?:submitted|received|sent)\b"
+    r"|your application is on its way",
     re.IGNORECASE,
 )
-_CONFIRM_URL_RE = re.compile(r"confirm|thank|success|submitted|complete", re.IGNORECASE)
+# Wording that takes a confirmation back, or says there is still something to do.
+_NOT_YET_RE = re.compile(
+    r"\bnot (?:yet )?(?:been )?(?:sent|submitted|received|completed?|saved)\b"
+    r"|\bone more step\b|\balmost (?:done|there|finished)\b"
+    r"|\b(?:complete|solve|pass) the (?:captcha|verification|challenge)\b"
+    r"|\bto (?:complete|finish|submit) your application\b"
+    r"|\bsomething went wrong\b|\btry again\b|\bnothing was saved\b"
+    r"|\berror \d{3}\b|\bserver error\b|\bcould not (?:be )?(?:submit|sen[dt]|sav|process)",
+    re.IGNORECASE,
+)
 _ERROR_SELECTOR = (
     "[aria-invalid='true'], .error, .field-error, .error-message, [role='alert'], .invalid-feedback"
 )
@@ -74,8 +92,10 @@ class FormPlan:
     fill: list[PlannedField] = field(default_factory=list)
     #: Required, and you have not provided an answer.
     unanswered: list[FormField] = field(default_factory=list)
-    #: Optional and unanswered: left blank.
+    #: Optional, unanswered and empty: left blank.
     left_blank: list[FormField] = field(default_factory=list)
+    #: Optional, unanswered, and already set by the site: left as the site set it.
+    kept: list[FormField] = field(default_factory=list)
     #: Reasons the form cannot be submitted unattended.
     blockers: list[dict[str, str]] = field(default_factory=list)
     submit_ref: str | None = None
@@ -105,13 +125,43 @@ class FormPlan:
             ],
             "unanswered": [to_dict(form_field) for form_field in self.unanswered],
             "left_blank": [form_field.label or form_field.name for form_field in self.left_blank],
+            "kept": [
+                {"label": form_field.label or form_field.name, "value": form_field.current}
+                for form_field in self.kept
+            ],
             "submit_text": self.submit_text,
+            "plan_hash": self.fingerprint(),
         }
+
+    def fingerprint(self) -> str:
+        """Identifies what would be entered. An approval is for one fingerprint.
+
+        The form is read again at the moment of sending. If the site changed
+        its questions meanwhile, or a stored answer changed, this no longer
+        matches what was approved and the application goes back for review.
+        """
+
+        def shown(planned: PlannedField) -> str:
+            value = planned.resolution.value
+            return Path(value).name if planned.field.type == "file" else value
+
+        payload = {
+            "fill": sorted([p.field.key, p.field.type, shown(p)] for p in self.fill),
+            "kept": sorted([f.key, f.current] for f in self.kept),
+            "blank": sorted(f.key for f in self.left_blank),
+            "unanswered": sorted(f.key for f in self.unanswered),
+            "submit": self.submit_text,
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass
 class FormOutcome:
-    #: ready | needs_answers | needs_human | submitted | failed
+    #: ready | needs_answers | needs_human | changed | submitted | unconfirmed | failed
+    #: ``changed``: the form is no longer what was approved; nothing was typed.
+    #: ``unconfirmed``: submit was pressed and the site did not confirm.
+    #: ``failed``: nothing was sent.
     status: str
     plan: FormPlan | None = None
     confirmation: str = ""
@@ -126,23 +176,74 @@ class FormOutcome:
 def check_form_url(url: str, settings: Settings) -> None:
     """Only public https pages; local addresses only when explicitly allowed."""
     try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise FormUrlRefused(f"not a valid address: {url!r}") from exc
+    # Browsers read "https://a\\@b/" differently from URL parsers; an address
+    # like that (or one with a user@ part) is never opened.
+    if "\\" in url or parts.username is not None or parts.password is not None:
+        raise FormUrlRefused("the address contains a backslash or a user name")
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in url):
+        raise FormUrlRefused("the address contains spaces or control characters")
+    try:
         check_public_url(url, allow_local=settings.allow_local_addresses, require_https=True)
     except UrlRefused as exc:
         raise FormUrlRefused(str(exc)) from exc
 
 
-def _guard_requests(page: Page, settings: Settings) -> None:
-    """Abort anything the page tries to load from a local or private address."""
-    if settings.allow_local_addresses:
-        return
+def _host(url: str) -> str:
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
-    def handler(route: Route, request: Request) -> None:
-        if is_local_url(request.url):
-            route.abort("blockedbyclient")
-        else:
-            route.continue_()
 
-    page.route("**/*", handler)
+def _off_site(page: Page, allowed_hosts: frozenset[str] | None) -> dict[str, str] | None:
+    """A blocker when the browser is not on one of the hosts it was sent to.
+
+    Checked after the page has loaded and again just before submitting, so a
+    redirect (or a script that navigates) cannot get a form on some other
+    site read, filled or submitted.
+    """
+    if allowed_hosts is None:
+        return None
+    host = _host(page.url)
+    if host in allowed_hosts:
+        return None
+    return {
+        "kind": "redirected",
+        "detail": (
+            f"The application page led to another site ({host or 'unknown'}), "
+            "so it was not read or filled in. Open it yourself."
+        ),
+    }
+
+
+def _new_page(browser: Browser, settings: Settings) -> tuple[BrowserContext, Page]:
+    """A fresh, isolated browser context with the request guard on it."""
+    context = browser.new_context()
+    page = context.new_page()
+    # An application form has no business opening further windows.
+    context.on("page", lambda other: other.close() if other is not page else None)
+    if not settings.allow_local_addresses:
+
+        def handler(route: Route, request: Request) -> None:
+            if is_local_url(request.url):
+                route.abort("blockedbyclient")
+            else:
+                route.continue_()
+
+        # On the context, so that it also covers anything the page spawns.
+        context.route("**/*", handler)
+        context.route_web_socket(
+            "**/*",
+            lambda socket: (
+                socket.close()
+                if is_local_url(re.sub(r"^ws", "http", socket.url))
+                else socket.connect_to_server()
+            ),
+        )
+    return context, page
 
 
 # --------------------------------------------------------------------- scan
@@ -197,6 +298,8 @@ def build_plan(scanned: dict[str, Any], book: AnswerBook) -> FormPlan:
             name=item.get("name", ""),
             options=list(item.get("options") or []),
             prefilled=bool(item.get("prefilled")),
+            label_source=str(item.get("labelSource") or ""),
+            current=str(item.get("current") or ""),
         )
         for item in scanned.get("fields", [])
     ]
@@ -210,7 +313,7 @@ def build_plan(scanned: dict[str, Any], book: AnswerBook) -> FormPlan:
         resolution = book.resolve(form_field)
         if resolution is not None:
             plan.fill.append(PlannedField(form_field, book.kind_of(form_field), resolution))
-        elif form_field.required and not form_field.prefilled:
+        elif form_field.required:
             if form_field.type == "file":
                 plan.blockers.append(
                     {
@@ -218,16 +321,32 @@ def build_plan(scanned: dict[str, Any], book: AnswerBook) -> FormPlan:
                         "detail": f"The form requires an upload this app does not produce: {form_field.label or form_field.name}",
                     }
                 )
+            elif not form_field.label:
+                plan.blockers.append(
+                    {
+                        "kind": "unlabelled",
+                        "detail": "The form has a required question whose wording could not be read, so it is yours to fill in.",
+                    }
+                )
             else:
+                # Also when the site pre-selected something: a default the
+                # site chose is not an answer you gave.
                 plan.unanswered.append(form_field)
+        elif form_field.prefilled:
+            plan.kept.append(form_field)
         else:
             plan.left_blank.append(form_field)
 
     if not plan.submit_ref:
+        several = int(scanned.get("submitCandidates") or 0) > 1
         plan.blockers.append(
             {
                 "kind": "no_submit",
-                "detail": "No submit button was found (the form may have several steps).",
+                "detail": (
+                    "More than one button could submit this form, so it is yours to submit."
+                    if several
+                    else "No submit button was found (the form may have several steps)."
+                ),
             }
         )
     return plan
@@ -322,19 +441,35 @@ def _body(page: Page) -> str:
         return ""
 
 
+def _still_there(page: Page, ref: str | None) -> bool:
+    """Is the control we tagged before submitting still on show?"""
+    if not ref:
+        return False
+    try:
+        locator = page.locator(ref)
+        return locator.count() > 0 and locator.first.is_visible()
+    except PlaywrightError:
+        return True  # mid-navigation: do not read that as "gone"
+
+
 def _await_outcome(
     page: Page,
-    before_url: str,
     timeout_s: float,
     *,
     baseline: set[str],
+    form_ref: str | None,
     fail_on_errors: bool,
 ) -> tuple[str, str]:
     """``("submitted", evidence)``, ``("failed", why)`` or ``("unknown", "")``.
 
+    "Submitted" needs all of: wording that says the application arrived, which
+    was not on the page before; the form itself gone (``form_ref`` is its
+    submit button, or failing that one of its fields); nothing on the page
+    taking it back ("not been sent yet", an error page); and no bot check or
+    login wall in the way. Anything less is "unknown".
+
     ``baseline`` holds confirmation-like phrases already on the page before it
-    was submitted ("Thank you for your interest in Acme" in a form's intro),
-    so they are not mistaken for a confirmation.
+    was submitted, so that a form's own introduction is not mistaken for one.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -342,23 +477,22 @@ def _await_outcome(
             return "unknown", ""
         try:
             body = page.inner_text("body", timeout=2_000)
-            url = page.url
-            controls = page.locator("input:not([type='hidden']), textarea, select").count()
         except PlaywrightError:
             time.sleep(0.3)  # mid-navigation
             continue
-        phrases = _confirm_phrases(body)
-        fresh = phrases - baseline
-        if fresh or (phrases and controls == 0):
-            match = next(
-                m for m in _CONFIRM_RE.finditer(body) if not fresh or m.group(0).lower() in fresh
-            )
-            start = max(0, match.start() - 60)
-            return "submitted", " ".join(body[start : match.end() + 160].split())
-        moved = urlsplit(url).path != urlsplit(before_url).path
-        if moved and _CONFIRM_URL_RE.search(urlsplit(url).path):
-            return "submitted", f"Redirected to {url}"
-        if fail_on_errors and not moved:
+        form_present = _still_there(page, form_ref)
+        fresh = _confirm_phrases(body) - baseline
+        if fresh and not form_present and not _NOT_YET_RE.search(body[:6000]):
+            try:
+                state = scan(page)
+            except PlaywrightError:
+                time.sleep(0.3)
+                continue
+            if not (state.get("captcha") or state.get("login") or state.get("interstitial")):
+                match = next(m for m in _CONFIRM_RE.finditer(body) if m.group(0).lower() in fresh)
+                start = max(0, match.start() - 60)
+                return "submitted", " ".join(body[start : match.end() + 160].split())
+        if fail_on_errors and form_present:
             errors = _visible_errors(page)
             if errors:
                 return "failed", "The form reported: " + "; ".join(errors)
@@ -393,6 +527,20 @@ def _robots_blocker(url: str, client: PoliteClient | None) -> dict[str, str] | N
     return {"kind": "robots", "detail": detail}
 
 
+def _refusal(
+    url: str, settings: Settings, client: PoliteClient | None, *, robots: bool = True
+) -> FormOutcome | None:
+    """Reasons not to open the page at all."""
+    try:
+        check_form_url(url, settings)
+    except FormUrlRefused as exc:
+        return FormOutcome(status="needs_human", blockers=[{"kind": "url", "detail": str(exc)}])
+    blocked = _robots_blocker(url, client) if robots else None
+    if blocked:
+        return FormOutcome(status="needs_human", blockers=[blocked])
+    return None
+
+
 def prepare(
     browser: Browser,
     url: str,
@@ -400,20 +548,23 @@ def prepare(
     *,
     settings: Settings,
     client: PoliteClient | None = None,
+    allowed_hosts: frozenset[str] | None = None,
 ) -> FormOutcome:
-    """Read the form and plan the answers. Types nothing, sends nothing."""
-    try:
-        check_form_url(url, settings)
-    except FormUrlRefused as exc:
-        return FormOutcome(status="needs_human", blockers=[{"kind": "url", "detail": str(exc)}])
-    blocked = _robots_blocker(url, client)
-    if blocked:
-        return FormOutcome(status="needs_human", blockers=[blocked])
+    """Read the form and plan the answers. Types nothing, sends nothing.
 
-    page = browser.new_page()
-    _guard_requests(page, settings)
+    ``allowed_hosts``: the sites the page may turn out to be on; a redirect
+    anywhere else is not read.
+    """
+    refused = _refusal(url, settings, client)
+    if refused:
+        return refused
+
+    context, page = _new_page(browser, settings)
     try:
         _open(page, url)
+        elsewhere = _off_site(page, allowed_hosts)
+        if elsewhere:
+            return FormOutcome(status="needs_human", blockers=[elsewhere])
         plan = build_plan(scan(page), book)
     except PlaywrightError as exc:
         message = str(exc).splitlines()[0]
@@ -424,7 +575,7 @@ def prepare(
             ],
         )
     finally:
-        page.close()
+        context.close()
     return FormOutcome(status=plan.status, plan=plan, blockers=list(plan.blockers))
 
 
@@ -437,24 +588,39 @@ def submit(
     client: PoliteClient | None = None,
     screenshot_dir: Path | None = None,
     label: str = "application",
+    allowed_hosts: frozenset[str] | None = None,
+    expect_plan: str | None = None,
 ) -> FormOutcome:
-    """Fill and submit unattended. Refuses unless the form is fully automatable."""
-    try:
-        check_form_url(url, settings)
-    except FormUrlRefused as exc:
-        return FormOutcome(status="needs_human", blockers=[{"kind": "url", "detail": str(exc)}])
-    blocked = _robots_blocker(url, client)
-    if blocked:
-        return FormOutcome(status="needs_human", blockers=[blocked])
+    """Fill and submit unattended. Refuses unless the form is fully automatable.
 
-    page = browser.new_page()
-    _guard_requests(page, settings)
+    ``expect_plan`` is the fingerprint of the plan that was approved. If the
+    form as it is now would be filled differently, nothing is typed and the
+    outcome is ``changed``.
+    """
+    refused = _refusal(url, settings, client)
+    if refused:
+        return refused
+
+    context, page = _new_page(browser, settings)
     shots: list[str] = []
+    plan: FormPlan | None = None
+    pressed = False
     try:
         _open(page, url)
+        elsewhere = _off_site(page, allowed_hosts)
+        if elsewhere:
+            return FormOutcome(status="needs_human", blockers=[elsewhere])
         plan = build_plan(scan(page), book)
         if plan.status != "ready":
             return FormOutcome(status=plan.status, plan=plan, blockers=list(plan.blockers))
+        if expect_plan is not None and plan.fingerprint() != expect_plan:
+            detail = (
+                "The form, or one of your stored answers, changed after this was approved. "
+                "Nothing was entered. Check what would be sent now and approve it again."
+            )
+            return FormOutcome(
+                status="changed", plan=plan, blockers=[{"kind": "form_changed", "detail": detail}]
+            )
 
         failed = _fill_all(page, plan, book)
         if failed:
@@ -472,16 +638,23 @@ def submit(
             return FormOutcome(
                 status="needs_human", plan=plan, blockers=[{"kind": "bot_check", "detail": detail}]
             )
+        elsewhere = _off_site(page, allowed_hosts)
+        if elsewhere:
+            return FormOutcome(status="needs_human", plan=plan, blockers=[elsewhere])
 
         shot = _screenshot(page, screenshot_dir, f"{label}-filled.png")
         if shot:
             shots.append(shot)
-        before_url = page.url
         baseline = _confirm_phrases(_body(page))
         assert plan.submit_ref is not None
+        pressed = True
         page.locator(plan.submit_ref).click()
         state, evidence = _await_outcome(
-            page, before_url, OUTCOME_TIMEOUT_S, baseline=baseline, fail_on_errors=True
+            page,
+            OUTCOME_TIMEOUT_S,
+            baseline=baseline,
+            form_ref=plan.submit_ref,
+            fail_on_errors=True,
         )
         shot = _screenshot(page, screenshot_dir, f"{label}-after-submit.png")
         if shot:
@@ -493,19 +666,32 @@ def submit(
         if state == "failed":
             return FormOutcome(status="failed", plan=plan, error=evidence, screenshots=shots)
         return FormOutcome(
-            status="failed",
+            status="unconfirmed",
             plan=plan,
             error=(
-                "The form was submitted but the site did not confirm it. It may or may not "
-                "have gone through: check the screenshot and the site before retrying."
+                "The submit button was pressed but the site did not confirm the application. "
+                "It may or may not have gone through: look at the screenshot and at the site, "
+                "then mark it as sent or prepare it again."
             ),
             screenshots=shots,
         )
     except PlaywrightError as exc:
-        return FormOutcome(status="failed", error=str(exc).splitlines()[0], screenshots=shots)
+        message = str(exc).splitlines()[0]
+        if pressed:
+            # The click happened; what the site did with it is not known.
+            return FormOutcome(
+                status="unconfirmed",
+                plan=plan,
+                error=(
+                    f"The page failed after the submit button was pressed ({message}). The "
+                    "application may or may not have gone through: check the site, then mark "
+                    "it as sent or prepare it again."
+                ),
+                screenshots=shots,
+            )
+        return FormOutcome(status="failed", plan=plan, error=message, screenshots=shots)
     finally:
-        if not page.is_closed():
-            page.close()
+        context.close()
 
 
 def assist(
@@ -524,13 +710,11 @@ def assist(
     the answers you already gave, outlines what is still missing, and watches
     for the site's confirmation. It never clicks submit.
     """
-    try:
-        check_form_url(url, settings)
-    except FormUrlRefused as exc:
-        return FormOutcome(status="needs_human", blockers=[{"kind": "url", "detail": str(exc)}])
+    refused = _refusal(url, settings, None, robots=False)
+    if refused:
+        return refused
 
-    page = browser.new_page()
-    _guard_requests(page, settings)
+    context, page = _new_page(browser, settings)
     shots: list[str] = []
     try:
         _open(page, url)
@@ -546,11 +730,15 @@ def assist(
                 continue
         if failed:
             log.info("assist: could not fill %s", "; ".join(failed))
+        # The form counts as gone when the control it was recognised by is gone.
+        anchor = plan.submit_ref or next(
+            (item.ref for item in [*(p.field for p in plan.fill), *plan.unanswered]), None
+        )
         state, evidence = _await_outcome(
             page,
-            page.url,
             wait_seconds,
             baseline=_confirm_phrases(_body(page)),
+            form_ref=anchor,
             fail_on_errors=False,
         )
         if state == "submitted":
@@ -574,5 +762,4 @@ def assist(
     except PlaywrightError as exc:
         return FormOutcome(status="failed", error=str(exc).splitlines()[0], screenshots=shots)
     finally:
-        if not page.is_closed():
-            page.close()
+        context.close()

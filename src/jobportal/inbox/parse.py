@@ -22,6 +22,8 @@ from jobportal.sources.base import infer_remote
 from jobportal.text import html_to_text, normalize_text, squash
 
 MAX_BODY_CHARS = 20_000
+#: How much of a body is looked at before it is cleaned up and cut to size.
+MAX_RAW_CHARS = 200_000
 _FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com",
     "icloud.com", "aol.com", "proton.me", "protonmail.com", "msn.com",
@@ -59,6 +61,31 @@ _BOUNCE_SUBJECT_RE = re.compile(
     r"mail delivery (?:failed|subsystem)|failure notice",
     re.IGNORECASE,
 )
+# "Delivery Status Notification (Delay)": still being retried, not a failure.
+_DELAY_SUBJECT_RE = re.compile(r"\bdelay(?:ed)?\b|\bwarning\b|still (?:being )?retr", re.IGNORECASE)
+_DSN_ACTION_RE = re.compile(r"(?im)^action\s*:\s*([a-z-]+)")
+# Control characters carry no meaning in a requirement and make text handling slow.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
+_AUTH_RESULT_RE = re.compile(r"\b(dmarc|spf|dkim)\s*=\s*([a-z]+)", re.IGNORECASE)
+# What vendors write instead of naming the end client. Anything matching is
+# treated as "client not named", which keeps the double-submission guard honest.
+_GENERIC_ORG = (
+    r"(?:client|customer|company|firm|bank|retailer|insurer|provider|organi[sz]ation|enterprise|"
+    r"corporation|institution|carrier|airline|agency|vendor|manufacturer|brand|giant|player|"
+    r"leader|major|conglomerate|startup|start-up)"
+)
+_NO_CLIENT_RE = re.compile(
+    r"\b(?:confidential|undisclosed|not\s+disclosed|non[- ]?disclos\w*"
+    r"|to\s+be\s+(?:disclosed|shared|announced|confirmed|decided)"
+    r"|will\s+(?:be\s+)?(?:disclos|shar)\w*|(?:up)?on\s+(?:request|selection|submission|interview)"
+    r"|(?:direct|end|our|my|the)\s+client|implementation\s+partner|prime\s+vendor"
+    r"|fortune\s*\d+|top\s*\d+|big\s*(?:four|4|three|3|five|5)"
+    r"|(?:leading|major|large|global|reputed|prestigious|well[- ]known|premier|top|big)\s+"
+    rf"(?:[\w&-]+\s+){{0,3}}{_GENERIC_ORG}"
+    r"|[\w&-]+(?:\s+[\w&-]+)?\s+(?:client|customer|domain|major|giant))\b"
+    r"|^(?:an?|one\s+of)\s|^(?:tb[dac]|n/?a|none|unknown|nil)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -73,8 +100,14 @@ class ParsedMail:
     date: datetime | None = None
     text: str = ""
     auto_submitted: bool = False
+    #: A report that our message could not be delivered (not a "still trying" notice).
     is_bounce: bool = False
     raw_text: str = ""  # headers + body as text, for finding quoted message ids
+    #: Where the sender asks replies to go, when that differs from the From address.
+    reply_to: str = ""
+    #: Your mail provider recorded that the sender checks (DMARC, or SPF and
+    #: DKIM) failed: the From address may be forged.
+    auth_failed: bool = False
 
 
 @dataclass
@@ -99,16 +132,58 @@ def _body_text(message: EmailMessage) -> str:
     plain = message.get_body(preferencelist=("plain",))
     if plain is not None:
         try:
-            return normalize_text(plain.get_content())
+            content = str(plain.get_content())[:MAX_RAW_CHARS]
+            return normalize_text(_CONTROL_RE.sub(" ", content))
         except (LookupError, UnicodeDecodeError):
             pass
     html = message.get_body(preferencelist=("html",))
     if html is not None:
         try:
-            return html_to_text(html.get_content())
+            content = str(html.get_content())[:MAX_RAW_CHARS]
+            return html_to_text(_CONTROL_RE.sub(" ", content))
         except (LookupError, UnicodeDecodeError):
             pass
     return ""
+
+
+def _is_bounce(message: EmailMessage, sender: str, subject: str) -> bool:
+    """A delivery *failure* report. Delay notices and receipts are not bounces."""
+    report = message.get_content_type() == "multipart/report"
+    looks_like_one = (
+        report
+        or sender.startswith(("mailer-daemon@", "postmaster@"))
+        or bool(_BOUNCE_SUBJECT_RE.search(subject))
+    )
+    if not looks_like_one:
+        return False
+    if report:
+        # A proper delivery status notification says what happened to each
+        # recipient; only "failed" means the message is not going to arrive.
+        actions: list[str] = []
+        for part in message.walk():
+            if part.get_content_type() == "message/delivery-status":
+                actions += _DSN_ACTION_RE.findall(part.as_string())
+        if actions:
+            return any(action.lower() == "failed" for action in actions)
+    return not _DELAY_SUBJECT_RE.search(subject)
+
+
+def _auth_failed(message: EmailMessage) -> bool:
+    """Did the receiving provider record a failed sender check?
+
+    Only the top-most ``Authentication-Results`` header counts: it is the one
+    the last server (your own provider) added. A forged header further down
+    can only claim a *pass*, and a pass is never used to trust anything here.
+    """
+    headers = message.get_all("Authentication-Results") or []
+    if not headers:
+        return False
+    results = {
+        name.lower(): verdict.lower() for name, verdict in _AUTH_RESULT_RE.findall(str(headers[0]))
+    }
+    if "dmarc" in results:
+        return results["dmarc"] == "fail"
+    return results.get("spf") in ("fail", "softfail") and results.get("dkim") != "pass"
 
 
 def parse_message(raw: bytes) -> ParsedMail:
@@ -125,12 +200,9 @@ def parse_message(raw: bytes) -> ParsedMail:
     subject = squash(str(message.get("Subject", "")))
     auto = str(message.get("Auto-Submitted", "no")).strip().lower() not in ("", "no")
     sender = from_addr.lower()
-    bounce = (
-        sender.startswith(("mailer-daemon@", "postmaster@"))
-        or message.get_content_type() == "multipart/report"
-        or bool(_BOUNCE_SUBJECT_RE.search(subject))
-    )
+    bounce = _is_bounce(message, sender, subject)
     recipients = getaddresses([str(v) for v in message.get_all("To", [])])
+    reply_to = parseaddr(str(message.get("Reply-To", "")))[1].strip().lower()
     return ParsedMail(
         message_id=squash(str(message.get("Message-ID", ""))),
         in_reply_to=squash(str(message.get("In-Reply-To", ""))),
@@ -143,7 +215,9 @@ def parse_message(raw: bytes) -> ParsedMail:
         text=_body_text(message)[:MAX_BODY_CHARS],
         auto_submitted=auto or bool(_AUTO_SUBJECT_RE.search(subject)),
         is_bounce=bounce,
-        raw_text=raw.decode("utf-8", errors="replace")[: MAX_BODY_CHARS * 3],
+        raw_text=raw[: MAX_BODY_CHARS * 12].decode("utf-8", errors="replace")[: MAX_BODY_CHARS * 3],
+        reply_to=reply_to if reply_to and reply_to != sender else "",
+        auth_failed=_auth_failed(message),
     )
 
 
@@ -193,6 +267,25 @@ def _employment(text: str) -> str | None:
     return None
 
 
+def client_name(value: str) -> str:
+    """The end client as written, or ``""`` when the vendor did not really name one.
+
+    "Confidential", "Direct Client", "Banking client", "Not disclosed" and the
+    like are ways of *not* naming the client. Treating them as names would
+    hide the fact that a double submission cannot be ruled out.
+    """
+    # Remarks in brackets are about the client, not part of its name.
+    value = re.sub(r"\s*[(\[][^)\]]*[)\]]", "", squash(value)).strip(" .:-–*_\"'")
+    if not value or len(value) > 80 or not re.search(r"[A-Za-z0-9]", value):
+        return ""
+    if _NO_CLIENT_RE.search(value):
+        return ""
+    # A name is short and has no sentence in it.
+    if len(value.split()) > 6 or re.search(r"[.!?;:]\s", value):
+        return ""
+    return value
+
+
 def extract_requirement(mail: ParsedMail) -> Requirement:
     text = mail.text
     title = _labelled(text, r"job title", r"position", r"role", r"title") or _title_from_subject(
@@ -204,11 +297,7 @@ def extract_requirement(mail: ParsedMail) -> Requirement:
             r"(?:[(|\-–]\s*)(remote[^)|]*|[A-Z][a-zA-Z .]+,\s*[A-Z]{2})\s*\)?", mail.subject
         )
         location = squash(tail.group(1)) if tail else ""
-    client = _labelled(text, r"end client", r"client(?: name)?", r"customer")
-    if re.fullmatch(
-        r"(?i)(confidential|tbd|n/?a|to be disclosed|will disclose.*|undisclosed)", client
-    ):
-        client = ""
+    client = client_name(_labelled(text, r"end client", r"client(?: name)?", r"customer"))
     haystack = f"{mail.subject}\n{text}"
     return Requirement(
         title=title or "Untitled requirement",

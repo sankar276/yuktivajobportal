@@ -1,10 +1,15 @@
 """Understand application-form fields and decide what goes in each.
 
 The rule throughout: an answer is either something you configured, something
-you answered before, or it is missing. Nothing is guessed. Questions with
-legal weight (work authorisation, sponsorship) are only answered from your
-profile when their wording is the plain, standard one; any unusual phrasing
-is handed to you instead.
+you answered before, or it is missing. Nothing is guessed.
+
+A field is recognised as one of yours (name, email, total years of
+experience, a self-identification question) only when its whole label says
+so, not when it merely contains the word. Questions with legal weight (work
+authorisation, sponsorship) are answered from your profile only when the
+whole question is one of a few standard phrasings, names your country and no
+other, and offers a plain Yes and No. Anything else is handed to you once,
+and your answer is remembered for that exact question.
 """
 
 from __future__ import annotations
@@ -12,10 +17,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from typing import Any
 
 from jobportal.config import Profile
-from jobportal.scoring import _ELSEWHERE_RE, mentions_us
 from jobportal.text import question_key, squash
 
 
@@ -53,12 +58,21 @@ TEXT_TYPES = {"text", "email", "tel", "url", "number", "textarea", "date"}
 CHOICE_TYPES = {"select", "radio", "checkbox", "combobox"}
 
 DECLINE = "decline"
+# An option that declines to self-identify: "Decline to self identify",
+# "I prefer not to say", a bare "I decline". Not any option that happens to
+# contain the word ("I decline the background check").
+_DECLINE_VERB = (
+    r"(?:decline|prefer not|choose not|(?:would )?rather not|do(?:n't| not) (?:wish|want)|not wish)"
+)
+_DECLINE_WHAT = (
+    r"(?: to)? (?:self[- ]?identify|identify|answer|say|disclose|specify|state|respond|share|"
+    r"provide|self[- ]?disclose)"
+)
 _DECLINE_RE = re.compile(
-    r"decline|prefer not|rather not|choose not|do(?:n't| not) wish|not wish to|"
-    r"do(?:n't| not) want to (?:answer|say|disclose)|not to (?:answer|say|disclose|self)",
+    rf"^(?:i )?{_DECLINE_VERB}(?:{_DECLINE_WHAT}\b.*)?$|\b{_DECLINE_VERB}{_DECLINE_WHAT}\b",
     re.IGNORECASE,
 )
-_NEGATION_RE = re.compile(r"\b(without|unable|not|don't|never|except|unless)\b", re.IGNORECASE)
+LEGAL_KINDS = frozenset({FieldKind.work_authorized, FieldKind.needs_sponsorship})
 
 
 @dataclass
@@ -74,6 +88,12 @@ class FormField:
     options: list[dict[str, str]] = field(default_factory=list)
     #: Something is already entered (the site pre-filled it).
     prefilled: bool = False
+    #: How the label is tied to the control: ``for``, ``wrap``, ``aria-label``,
+    #: ``aria-labelledby``, ``legend``, ``group``, ``nearby`` (unbound text in
+    #: the field's own box), ``placeholder``, or empty when there is none.
+    label_source: str = ""
+    #: What the site pre-filled, as shown to a person.
+    current: str = ""
 
     @property
     def key(self) -> str:
@@ -96,52 +116,116 @@ class Resolution:
 
 # ----------------------------------------------------------- classification
 
-# Checked in order: specific patterns before general ones.
+# Each pattern must match the *whole* label (as bare lower-case words), so
+# that "City of birth", "Phone extension" or "Which city are you applying
+# for?" are not taken for your city or phone. A label these do not cover is
+# simply asked once and remembered.
 _LABEL_RULES: list[tuple[FieldKind, re.Pattern[str]]] = [
-    (FieldKind.resume, re.compile(r"\b(resume|résumé|cv|curriculum vitae)\b", re.I)),
-    (FieldKind.cover_letter, re.compile(r"\bcover letter\b", re.I)),
-    (FieldKind.linkedin, re.compile(r"linked\s?in", re.I)),
-    (FieldKind.github, re.compile(r"\bgit\s?hub\b", re.I)),
-    (FieldKind.website, re.compile(r"\b(website|portfolio|personal site|blog)\b", re.I)),
+    (FieldKind.linkedin, re.compile(r"(?:your )?linked ?in(?: profile)?(?: url| link)?")),
+    (FieldKind.github, re.compile(r"(?:your )?git ?hub(?: profile)?(?: url| link)?")),
+    (
+        FieldKind.website,
+        re.compile(
+            r"(?:your )?(?:personal )?(?:website|portfolio|blog|personal site)(?: url| link)?"
+            r"|website or portfolio|portfolio or website|portfolio website"
+        ),
+    ),
     (
         FieldKind.preferred_name,
-        re.compile(r"\b(preferred|nick)\s?(first )?name\b|\bgoes by\b", re.I),
+        re.compile(r"(?:preferred|nick) ?(?:first )?name|nickname|what name do you go by"),
     ),
-    (FieldKind.first_name, re.compile(r"\b(first|given)\s?name\b", re.I)),
-    (FieldKind.last_name, re.compile(r"\b(last|family)\s?name\b|\bsurname\b", re.I)),
+    (FieldKind.first_name, re.compile(r"(?:your )?(?:legal )?(?:first|given) ?name")),
+    (FieldKind.last_name, re.compile(r"(?:your )?(?:legal )?(?:last|family) ?name|surname")),
     (
         FieldKind.current_company,
         re.compile(
-            r"\b(current|present|most recent)\s+(company|employer)\b|^(company|employer|organization|org)( name)?$",
-            re.I,
+            r"(?:current|present|most recent) (?:company|employer)(?: name)?"
+            r"|(?:company|employer|organization|organisation|org)(?: name)?"
         ),
     ),
     (
         FieldKind.current_title,
         re.compile(
-            r"\b(current|present|most recent)\s+(job )?(title|role|position)\b|^(job )?title$", re.I
+            r"(?:current|present|most recent) (?:job )?(?:title|role|position)|(?:job )?title"
         ),
     ),
     (
         FieldKind.full_name,
-        re.compile(r"^(full |legal |your )?name$|\bfull name\b|\blegal name\b", re.I),
+        re.compile(r"(?:your )?(?:full legal |full |legal )?name(?: first and last)?"),
     ),
-    (FieldKind.email, re.compile(r"\be-?mail\b", re.I)),
-    (FieldKind.phone, re.compile(r"\b(phone|mobile|telephone|cell)\b", re.I)),
+    (FieldKind.email, re.compile(r"(?:your )?e ?mail(?: address)?")),
+    (
+        FieldKind.phone,
+        re.compile(
+            r"(?:your )?(?:phone|mobile|cell|telephone|mobile phone|cell phone|contact number)"
+            r"(?: number| no)?"
+        ),
+    ),
     (
         FieldKind.location,
         re.compile(
-            r"^(current )?location\b|\bwhere are you (currently )?(located|based)\b|\bcity\b.*\bstate\b",
-            re.I,
+            r"(?:your )?(?:current )?location(?: city)?(?: state)?(?: country)?"
+            r"|where are you (?:currently )?(?:located|based)|city (?:and )?state(?: country)?"
         ),
     ),
-    (FieldKind.postal_code, re.compile(r"\b(zip|postal)\s?(code)?\b", re.I)),
-    (FieldKind.city, re.compile(r"^city$|\bcity\b(?!.*\bstate\b)", re.I)),
-    (FieldKind.region, re.compile(r"^(state|province|region)$|\bstate\s?/\s?province\b", re.I)),
-    (FieldKind.country, re.compile(r"^country$|\bcountry of residence\b", re.I)),
+    (FieldKind.postal_code, re.compile(r"(?:zip|postal)(?: code)?|zip postal code|postcode")),
+    (FieldKind.city, re.compile(r"(?:current )?city|city of residence|city town")),
     (
-        FieldKind.years_experience,
-        re.compile(r"\b(total )?years of (professional |relevant |work )?experience\b", re.I),
+        FieldKind.region,
+        re.compile(r"state|province|region|state province|state or province|state province region"),
+    ),
+    (FieldKind.country, re.compile(r"(?:current )?country|country of residence")),
+]
+# A resume or cover letter is only ever an upload. A text box that mentions
+# one ("Link to resume", "Paste your cover letter") is a question for you.
+_DOCUMENT_RE = re.compile(r"\b(resume|résumé|cv|curriculum vitae|cover letter)\b", re.I)
+# Total experience, and nothing narrower: "years of experience with Rust" or
+# "relevant experience" is not something your total answers.
+_KINDS_OF_EXPERIENCE = r"(?:(?:professional|work|working|total|overall|full time) )*"
+_YEARS_RE = re.compile(
+    rf"(?:total |overall )?(?:number of )?years(?: of)? {_KINDS_OF_EXPERIENCE}experience(?: in total)?"
+    rf"|how many years of {_KINDS_OF_EXPERIENCE}experience do you have(?: in total| overall| altogether)?"
+)
+# Labels about another person. Their name, email or phone is never yours.
+_SOMEONE_ELSE_RE = re.compile(
+    r"\b(referr(?:er|al|ed|ing)|referenc\w*|referee|emergency|next of kin|manager|supervisor|"
+    r"recruiter|spouse|partner|parent|guardian|friend|colleague|co-?worker|contact person|"
+    r"employee who|who (?:referred|recommended)|someone (?:we|you))\b"
+    r"|\b(?!(?:your|what|it|that|here|there|who|let)['’]s\b)[a-z]+['’]s\b",
+    re.I,
+)
+# Self-identification questions, matched against the whole label.
+_EEO_RULES: list[tuple[FieldKind, re.Pattern[str]]] = [
+    (
+        FieldKind.eeo_gender,
+        re.compile(
+            r"(?:what is your |please (?:select|indicate|identify) your |i identify my )?"
+            r"(?:gender|sex)(?: identity)?(?: as)?|(?:what |which )?gender do you identify (?:as|with)"
+        ),
+    ),
+    (
+        FieldKind.eeo_race,
+        re.compile(
+            r"(?:what is your |please (?:select|indicate|identify) your )?"
+            r"(?:race|ethnicity|race ethnicity|race and ethnicity|race or ethnicity|ethnic (?:background|group|origin)|"
+            r"racial ethnic (?:background|identity|group)|hispanic latino|hispanic or latino)"
+            r"|are you hispanic(?: or)? latin[oax]"
+        ),
+    ),
+    (
+        FieldKind.eeo_veteran,
+        re.compile(
+            r"(?:what is your |please (?:select|indicate|identify) your )?(?:protected )?veteran status"
+            r"|(?:are you|do you identify as) a (?:protected )?veteran"
+        ),
+    ),
+    (
+        FieldKind.eeo_disability,
+        re.compile(
+            r"(?:what is your |please (?:select|indicate|identify) your )?disability(?: status)?"
+            r"|do you (?:have|identify as having) a disability(?: or have you ever had (?:one|a disability))?"
+            r"|voluntary self identification of disability"
+        ),
     ),
 ]
 _NAME_HINTS: dict[str, FieldKind] = {
@@ -161,14 +245,52 @@ _NAME_HINTS: dict[str, FieldKind] = {
     "_systemfield_email": FieldKind.email,
     "_systemfield_resume": FieldKind.resume,
 }
-_AUTHORIZED_RE = re.compile(
-    r"\b(authori[sz]ed|eligible|entitled|permitted|allowed|have the (legal )?right)\b.{0,40}\bto work\b",
+# Any of these words makes a question a legal one. If it is not then one of
+# the exact phrasings below, it is never answered automatically.
+_LEGAL_WORDS_RE = re.compile(
+    r"authori[sz]|sponsor|\bvisas?\b|citizen|\bwork permit|right to work|"
+    r"\b(?:eligible|permitted|allowed|entitled) to work\b|clearance|immigration|green card|\bh-?1b\b",
     re.IGNORECASE,
 )
-_SPONSORSHIP_RE = re.compile(
-    r"\b(require|need)\b.{0,60}\bsponsor(ship)?\b|\bsponsor(ship)?\b.{0,40}\b(required|needed)\b",
-    re.IGNORECASE,
+_US_NAMES = {"united states", "united states of america", "us", "usa", "u.s.", "u.s.a."}
+# An example in brackets ("(e.g., H-1B visa status)") is not part of the question.
+_EXAMPLE_RE = re.compile(
+    r"[(\[]\s*(?:e\.?\s?g\.?|i\.?\s?e\.?|for example|such as)\b[^)\]]*[)\]]", re.I
 )
+
+
+def plain(label: str) -> str:
+    """The label as bare lower-case words, for matching whole questions."""
+    text = _EXAMPLE_RE.sub(" ", label).lower().replace("\u2019", "'")
+    return " ".join(re.sub(r"[^a-z0-9' ]+", " ", text).split())
+
+
+@lru_cache(maxsize=16)
+def _legal_patterns(country: str) -> tuple[re.Pattern[str], re.Pattern[str]] | None:
+    """Whole-question patterns for the two legal questions, for one country."""
+    name = country.strip().lower()
+    if not name:
+        return None
+    if name in _US_NAMES:
+        place = r"(?:the )?(?:united states(?: of america)?|u s a|u s|usa|us)"
+    else:
+        place = r"(?:the )?" + re.escape(plain(name))
+    authorised = re.compile(
+        rf"(?:are|will) you (?:be )?(?:(?:currently|legally|lawfully) )*"
+        rf"(?:authori[sz]ed|eligible|permitted|allowed|entitled) to work (?:(?:legally|lawfully) )?in {place}"
+        rf"(?: for any employer)?"
+        rf"|do you (?:currently )?have (?:the )?(?:legal |lawful )?(?:right|authori[sz]ation|permission) "
+        rf"to work in {place}"
+        rf"|(?:(?:legally|lawfully) )?(?:authori[sz]ed|eligible) to work in {place}"
+    )
+    when = r"(?: now or in (?:the )?future| in (?:the )?future| currently| now)?"
+    sponsorship = re.compile(
+        rf"(?:(?:will|do|would) you|do you now or will you in the future){when} (?:require|need){when} "
+        rf"(?:(?:visa|employment|immigration|work|employer|company) )*sponsorship"
+        rf"(?: for (?:an? )?(?:employment|work|immigration) (?:visa|authori[sz]ation|permit)(?: status)?)?"
+        rf"{when}(?: (?:in order )?to (?:work|be employed)(?: legally| lawfully)? in {place}| in {place}){when}"
+    )
+    return authorised, sponsorship
 
 
 def classify(form_field: FormField, profile: Profile) -> FieldKind:
@@ -189,56 +311,51 @@ def classify(form_field: FormField, profile: Profile) -> FieldKind:
         )
 
     if form_field.type in CHOICE_TYPES or form_field.options:
-        if re.search(r"\bgender\b", label, re.I):
-            return FieldKind.eeo_gender
-        if re.search(r"\b(race|ethnicity|ethnic|hispanic|latino)\b", label, re.I):
-            return FieldKind.eeo_race
-        if re.search(r"\bveteran\b", label, re.I):
-            return FieldKind.eeo_veteran
-        if re.search(r"\bdisabilit", label, re.I):
-            return FieldKind.eeo_disability
+        words = plain(label)
+        for kind, pattern in _EEO_RULES:
+            if pattern.fullmatch(words):
+                return kind
 
     legal = _legal_kind(label, profile)
     if legal is not None:
         return legal
-    if (
-        _AUTHORIZED_RE.search(label)
-        or re.search(r"\bsponsor", label, re.I)
-        or re.search(r"\bvisa\b", label, re.I)
-    ):
+    if _LEGAL_WORDS_RE.search(label):
         return FieldKind.question  # legal wording we do not recognise exactly: ask you
+    if _SOMEONE_ELSE_RE.search(label) or _DOCUMENT_RE.search(label):
+        return FieldKind.question
+    if _YEARS_RE.fullmatch(plain(label)):
+        return FieldKind.years_experience
 
-    if form_field.type == "email":
-        return FieldKind.email
-    if form_field.type == "tel":
-        return FieldKind.phone
-    # A long question that merely mentions a field word ("What is your company's
-    # biggest challenge?") is a question, not that field.
+    words = plain(label)
+    for kind, pattern in _LABEL_RULES:
+        if pattern.fullmatch(words):
+            return kind
+    if not label:
+        # Nothing to read: the control's own type says what it wants.
+        if form_field.type == "email":
+            return FieldKind.email
+        if form_field.type == "tel":
+            return FieldKind.phone
     if len(label) <= 60:
-        for kind, pattern in _LABEL_RULES:
-            if pattern.search(label):
-                return kind
-    if lowered_name in _NAME_HINTS and len(label) <= 60:
-        return _NAME_HINTS[lowered_name]
+        # The board's own field name ("name", "email", "org" on Lever).
+        hinted = _NAME_HINTS.get(lowered_name)
+        if hinted is not None and hinted is not FieldKind.resume:
+            return hinted
     return FieldKind.question
 
 
 def _legal_kind(label: str, profile: Profile) -> FieldKind | None:
     """Recognise only the plain, standard wording of the two legal questions."""
-    if _NEGATION_RE.search(label) or len(label) > 220:
+    patterns = _legal_patterns(profile.work_authorization.country)
+    if patterns is None or len(label) > 220:
         return None
-    country = profile.work_authorization.country.strip().lower()
-    is_us = country in {"united states", "us", "usa", "united states of america"}
-    names_country = mentions_us(label) if is_us else bool(country and country in label.lower())
-    if not names_country or (is_us and _ELSEWHERE_RE.search(label)):
-        return None
-    authorized = bool(_AUTHORIZED_RE.search(label))
-    sponsorship = bool(_SPONSORSHIP_RE.search(label))
-    if authorized and not sponsorship:
+    authorised, sponsorship = patterns
+    words = plain(label)
+    if authorised.fullmatch(words):
         return FieldKind.work_authorized
-    if sponsorship and not authorized:
+    if sponsorship.fullmatch(words):
         return FieldKind.needs_sponsorship
-    return None  # both at once ("authorized ... without sponsorship") is ambiguous
+    return None
 
 
 # ------------------------------------------------------------------ answers
@@ -282,8 +399,18 @@ def _yes_no(value: bool | None) -> str | None:
     return None if value is None else ("Yes" if value else "No")
 
 
+# A question that joins or qualifies things ("located in or willing to relocate
+# to Austin?") is not answered by a phrase that matches half of it.
+_COMPOUND_RE = re.compile(
+    r"\b(?:or|nor|not|never|unless|except|if|either|neither|without|other than|but)\b|n['\u2019]t\b",
+    re.IGNORECASE,
+)
+
+
 def standard_answer(label: str, profile: Profile) -> str | None:
-    """The first of your standard answers whose phrase occurs in the question."""
+    """The first of your standard answers whose phrase occurs in a simple question."""
+    if _LEGAL_WORDS_RE.search(label) or _COMPOUND_RE.search(label):
+        return None
     haystack = question_key(label)
     for entry in profile.answers:
         needle = question_key(entry.match)
@@ -292,6 +419,13 @@ def standard_answer(label: str, profile: Profile) -> str | None:
         if needle and re.search(rf"(?<![a-z0-9]){re.escape(needle)}", haystack):
             return entry.answer
     return None
+
+
+_QUALIFIER_RE = re.compile(
+    r"\b(?:no|not|non|never|none|without|except|unless|but|under|over|less|more|than|only|"
+    r"former|ex|previous|other)\b|n['\u2019]t\b",
+    re.IGNORECASE,
+)
 
 
 def match_option(answer: str, options: list[dict[str, str]]) -> dict[str, str] | None:
@@ -309,19 +443,26 @@ def match_option(answer: str, options: list[dict[str, str]]) -> dict[str, str] |
     if len(exact) == 1:
         return exact[0]
     if wanted in ("yes", "no", "true", "false"):
-        word = "yes" if wanted in ("yes", "true") else "no"
+        # Only a bare Yes or No. "No, I am a citizen" or "Yes, but I will need
+        # sponsorship" says more than your answer does, so it is never picked.
+        accepted = {"yes", "true", "y"} if wanted in ("yes", "true") else {"no", "false", "n"}
         hits = [
-            o
-            for o, text in zip(options, labels, strict=True)
-            if re.match(rf"{word}\b", text)
-            or text in ({"true", "y"} if word == "yes" else {"false", "n"})
+            o for o, text in zip(options, labels, strict=True) if text.rstrip(" .!") in accepted
         ]
         return hits[0] if len(hits) == 1 else None
-    partial = [
-        o
-        for o, text in zip(options, labels, strict=True)
-        if re.search(rf"(?<![a-z0-9]){re.escape(wanted)}(?![a-z0-9])", text)
-    ]
+    if not re.search(r"[a-z]{3}", wanted):
+        return None  # a number or a code picks an option only when it is the whole option
+    # Otherwise the answer may be most of an option ("Referral" for "Employee
+    # referral"), as long as what the option adds is short and does not turn
+    # the meaning around.
+    partial = []
+    for option, text in zip(options, labels, strict=True):
+        found = re.search(rf"(?<![a-z0-9]){re.escape(wanted)}(?![a-z0-9])", text)
+        if not found:
+            continue
+        rest = f"{text[: found.start()]} {text[found.end() :]}"
+        if len(rest.split()) <= 3 and not _QUALIFIER_RE.search(rest):
+            partial.append(option)
     return partial[0] if len(partial) == 1 else None
 
 
@@ -333,4 +474,5 @@ def to_dict(form_field: FormField) -> dict[str, Any]:
         "type": form_field.type,
         "required": form_field.required,
         "options": form_field.option_labels,
+        "current": form_field.current,
     }
