@@ -32,6 +32,26 @@ _YEARS_RE = re.compile(
 _MIN_YEARS_RE = re.compile(
     r"(?:minimum|min\.?|at least) (?:of )?(\d{1,2})\+? ?(?:years?|yrs?)\b", re.IGNORECASE
 )
+# "8+ years in software engineering", "7+ YOE": the plus marks it as something asked for.
+_PLUS_YEARS_RE = re.compile(
+    r"(?<![\d.$\-\u2013])(?<![-\u2013] )(\d{1,2}) ?\+ ?(?:years?|yrs?|yoe)\b", re.IGNORECASE
+)
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "twenty": 20,
+}  # fmt: skip
+_NUMBER_WORD_RE = re.compile(
+    r"\b(" + "|".join(_NUMBER_WORDS) + r")\b(?=\+? ?(?:\(\d{1,2}\) ?)?\+? ?(?:years?|yrs?)\b)",
+    re.IGNORECASE,
+)
+# The years are the company's, or somebody's, not something asked of you.
+_NOT_ASKED_RE = re.compile(
+    r"\bcombined\b|\byears?[- ]old\b|\bin the market\b|\bin business\b|\bserving\b"
+    r"|\bteam brings\b|\bleadership team\b|\bfounders?\b|\bvesting\b|\bcontract length\b"
+    r"|\braised\b|\bover the (?:last|past)\b|\bdon['’]t need\b|\bdo not need\b|\bno need\b"
+    r"|\bno minimum\b|\bnot required\b",
+    re.IGNORECASE,
+)
 
 # ---- clearance -----------------------------------------------------------
 # A sentence is about a security clearance when it names one outright, or
@@ -47,7 +67,10 @@ _CLEARANCE_TERM_RE = re.compile(
 )
 _NOT_SECURITY_RE = re.compile(
     r"\bclearance (?:of|from) (?:a |an |the )?(?:background|medical|drug|customs|credit|reference)"
-    r"|\b(?:background|medical|drug|customs|credit) (?:check |screen(?:ing)? )?clearance\b",
+    r"|\b(?:background|medical|drug|customs|credit) (?:check |screen(?:ing)? )?clearance\b"
+    # Somebody else's requirement, or a process, not something asked of you.
+    r"|\bclearance (?:process(?:es)?|procedures?|workflows?)\b"
+    r"|\bcustomers? (?:who|that|which) require\b",
     re.IGNORECASE,
 )
 _OPTIONAL_RE = re.compile(
@@ -56,7 +79,8 @@ _OPTIONAL_RE = re.compile(
     re.IGNORECASE,
 )
 _NEGATED_RE = re.compile(
-    r"\bno\b|\bnot\b|n['’]t\b|\bwithout\b|\bnever\b|\bneither\b|\bnor\b", re.IGNORECASE
+    r"\bno\b|\bnot\b|n['’]t\b|\bwithout\b|\bnever\b|\bneither\b|\bnor\b|\bnone\b|\bn/a\b",
+    re.IGNORECASE,
 )
 _OBTAIN_RE = re.compile(
     r"\b(?:ability|able|eligible|eligibility|willing(?:ness)?)\s+to\s+"
@@ -85,13 +109,35 @@ _CLEARANCE_LEVELS = [
 # ---- sponsorship ---------------------------------------------------------
 _SPONSOR_WORD_RE = re.compile(r"\bsponsor(?:ship|ing|s|ed)?\b", re.IGNORECASE)
 _SPONSOR_NEGATED_RE = re.compile(
-    r"\b(?:unable|cannot|can not|can['’]t|won['’]t|don['’]t|doesn['’]t|no|not|never|without)\b",
+    r"\b(?:unable|unavailable|cannot|can not|no|not|never|without)\b|n['’]t\b",
     re.IGNORECASE,
 )
 _SPONSOR_OFFERED_RE = re.compile(
     r"\bsponsorship\b[^.\n]{0,25}\b(?:available|offered|provided|possible)\b"
     r"|\b(?:we|will|can|do|does|may)\s+(?:also\s+)?sponsor\b"
+    r"|\b(?:happy|able|willing|glad|open)\s+to\s+sponsor\b"
     r"|\b(?:offers?|provides?)\s+(?:visa\s+|h-?1b\s+)?sponsorship\b",
+    re.IGNORECASE,
+)
+# What makes a sentence about sponsoring a person to work, and what makes it
+# about sponsoring something else (a conference, a community, a colleague).
+_VISA_CUE_RE = re.compile(
+    r"\bvisas?\b|\bh-?1b\b|\bimmigration\b|\bwork (?:authori[sz]ation|permit)s?\b"
+    r"|\bemployment (?:visa|authori[sz]ation)\b|\bgreen card\b",
+    re.IGNORECASE,
+)
+_OTHER_SPONSOR_RE = re.compile(
+    r"\b(?:event|conference|corporate|community|executive|brand|sports?) sponsor\w*"
+    r"|\bsponsorships? (?:programs?|budgets?|deals?|packages?|opportunit\w+|revenue|sales)\b"
+    r"|\bsponsor[- ](?:led|banks?)\b"
+    r"|\bsponsor(?:s|ing|ed)? (?:\w+ ){0,3}?(?:conferences?|events?|certifications?|communit\w+"
+    r"|meetups?|attendance|engineers?|training|hackathons?|open[- ]source|programs?)\b",
+    re.IGNORECASE,
+)
+# "Visa sponsorship: No", "Sponsorship available: yes".
+_SPONSOR_LABEL_RE = re.compile(
+    r"\bsponsorship(?: available| offered| provided)?\s*:\s*"
+    r"(yes|available|no|none|not available|unavailable|n/a)\b",
     re.IGNORECASE,
 )
 
@@ -100,20 +146,26 @@ _TRAVEL_KIND = (
     r"(?:(?:domestic|international|overnight|business|regional|local|global|required|expected|"
     r"occasional|client|customer|work[- ]related) )"
 )
+_PERCENT = r"(?: ?%| percent\b)"
 _TRAVEL_BEFORE_RE = re.compile(
-    rf"(?<![\d.])(\d{{1,3}}) ?% ?(?:of (?:the )?time )?(?:(?:of|for|in) )?{_TRAVEL_KIND}*travel\b"
-    r"(?! (?:costs?|expenses?|reimburs\w*|insurance|stipend|budget|allowance|booking|benefits?|industry|tech))",
+    rf"(?<![\d.])(\d{{1,3}}){_PERCENT} ?(?:of (?:the )?time )?(?:(?:of|for|in) )?{_TRAVEL_KIND}*travel\b"
+    r"(?! (?:costs?|expenses?|reimburs\w*|insurance|stipend|budget|allowance|booking|benefits?"
+    r"|industry|tech|time|emissions?|polic\w+|platform|spend))",
     re.IGNORECASE,
 )
 _TRAVEL_AFTER_RE = re.compile(
     r"\btravel(?:l?ing)?\b(?: requirements?| required| percentage| expectations?)?:?"
-    r"([^.,;%\n]{0,40}?)(?<![\d.])(\d{1,3}) ?%",
+    rf"([^.,;%\n]{{0,40}}?)(?<![\d.])(\d{{1,3}}){_PERCENT}"
+    # "travel 100% remote", "50% off flights": the figure is about something else.
+    r"(?! ?(?:remote|paid|covered|employer|company|off\b|match|discount"
+    r"|of (?:your |the )?(?:premiums?|costs?|expenses?|flights?|travel)))",
     re.IGNORECASE,
 )
 # Words that make the number after "travel" something other than travel time.
 _NOT_TRAVEL_RE = re.compile(
     r"remote|paid|match|premium|uptime|cover|reimburs|cost|expens|insur|401|bonus|discount|"
-    r"salary|equity|booking|api|industry|budget|stipend",
+    r"salary|equity|booking|api|industry|budget|stipend|benefit|perk|emission|polic|platform|"
+    r"spend|\btime by\b|\bby\b",
     re.IGNORECASE,
 )
 _ONCALL_RE = re.compile(r"\bon[- ]call\b", re.IGNORECASE)
@@ -159,12 +211,42 @@ CERTIFICATIONS = (
 
 
 def _years(text: str) -> int | None:
-    flat = " ".join(text.split())  # also across the hard line breaks of an email
-    found = [int(m.group(1)) for m in _YEARS_RE.finditer(flat)]
-    found += [int(m.group(1)) for m in _MIN_YEARS_RE.finditer(flat)]
+    """The years of experience the posting asks for, when it asks.
+
+    Read one sentence at a time, so that a figure about the company ("20
+    years in the market"), a figure it says you do not need, and one that is
+    only a nice-to-have are left out.
+    """
+    # List items and paragraphs are sentences of their own; a line break
+    # inside one (the hard wrap of an email) is just a space.
+    marked = re.sub(r"\n\s*(?:[-*\u2022]\s+|\n)", ". ", text)
+    flat = re.sub(r"\bmin\.", "minimum", " ".join(marked.split()), flags=re.IGNORECASE)
+    flat = _NUMBER_WORD_RE.sub(lambda m: str(_NUMBER_WORDS[m.group(1).lower()]), flat)
+    found: list[int] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", flat):
+        if _NOT_ASKED_RE.search(sentence):
+            continue
+        for pattern in (_YEARS_RE, _MIN_YEARS_RE, _PLUS_YEARS_RE):
+            for match in pattern.finditer(sentence):
+                if not _OPTIONAL_RE.search(_clause_around(sentence, match.start(), match.end())):
+                    found.append(int(match.group(1)))
     plausible = [years for years in found if 1 <= years <= 30]
     # The most demanding figure is the role's real bar ("12+ years, 5+ leading teams").
     return max(plausible) if plausible else None
+
+
+def _clause_around(sentence: str, start: int, end: int, reach: int = 200) -> str:
+    """The stretch between commas that holds ``sentence[start:end]``.
+
+    "Nice to have: 20+ years of COBOL" and "2+ years of Rust preferred" are
+    one clause each; ", cloud certification preferred" after a figure is the
+    next one. Looks no further than ``reach`` characters either way.
+    """
+    before = sentence[max(0, start - reach) : start]
+    after = sentence[end : end + reach]
+    left = max(before.rfind(","), before.rfind(";")) + 1
+    cuts = [index for index in (after.find(","), after.find(";")) if index >= 0]
+    return before[left:] + sentence[start:end] + after[: min(cuts) if cuts else len(after)]
 
 
 def _sentences(text: str) -> list[str]:
@@ -208,7 +290,15 @@ def _sponsorship(text: str) -> str | None:
     for sentence in _sentences(text):
         if not _SPONSOR_WORD_RE.search(sentence):
             continue
+        if not _VISA_CUE_RE.search(sentence) and _OTHER_SPONSOR_RE.search(sentence):
+            continue  # "we sponsor conferences": not about your right to work
         if re.search(r"\bwith or without\b", sentence, re.IGNORECASE):
+            continue
+        label = _SPONSOR_LABEL_RE.search(sentence)
+        if label:
+            if label.group(1).lower() not in ("yes", "available"):
+                return "not_offered"
+            offered = True
             continue
         for clause in _CLAUSE_SPLIT_RE.split(sentence):
             if not _SPONSOR_WORD_RE.search(clause):

@@ -24,6 +24,8 @@ from jobportal.text import html_to_text, normalize_text, squash
 MAX_BODY_CHARS = 20_000
 #: How much of a body is looked at before it is cleaned up and cut to size.
 MAX_RAW_CHARS = 200_000
+#: A subject longer than this is cut before it is read.
+MAX_SUBJECT_CHARS = 1000
 _FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com",
     "icloud.com", "aol.com", "proton.me", "protonmail.com", "msn.com",
@@ -237,7 +239,9 @@ def looks_like_requirement(mail: ParsedMail) -> bool:
 def _labelled(text: str, *labels: str) -> str:
     """The value of a ``Label: value`` line, for the first label that occurs."""
     for label in labels:
-        match = re.search(rf"(?im)^\W{{0,4}}{label}\s*[:\-–]\s*(.+?)\s*$", text)
+        # The value runs to the end of its line and is trimmed afterwards; a
+        # lazy match followed by "\s*$" would rescan a long run of blanks.
+        match = re.search(rf"(?im)^\W{{0,4}}{label}\s*[:\-–]\s*(.+)$", text)
         if match:
             value = squash(match.group(1)).strip("*_ ")
             if value:
@@ -246,6 +250,7 @@ def _labelled(text: str, *labels: str) -> str:
 
 
 def _title_from_subject(subject: str) -> str:
+    subject = squash(subject[:MAX_SUBJECT_CHARS])  # no long runs of blanks for the patterns below
     cleaned = _SUBJECT_NOISE_RE.sub("", subject)
     cleaned = _SUBJECT_TAIL_RE.sub("", cleaned)
     return squash(cleaned).strip(" -:|,")[:200]

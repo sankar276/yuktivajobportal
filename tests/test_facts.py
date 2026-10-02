@@ -16,6 +16,28 @@ from jobportal.facts import extract_facts, workplace_of
         ("15 yrs experience with cloud", 15),
         ("5 or more years of professional experience", 5),
         ("We have been in business for 20 years.", None),
+        # Asked for without the word "experience": the plus says it is a requirement.
+        ("8+ years in software engineering", 8),
+        ("You have 15+ years in the industry", 15),
+        ("Experience: 10+ years", 10),
+        ("5+ yrs of exp in cloud", 5),
+        ("7+ YOE", 7),
+        ("at least five years of experience", 5),
+        ("Minimum ten years of experience", 10),
+        ("min. 3 years", 3),
+        ("5-7+ years of experience", 5),
+        # The company's years, not yours.
+        ("We are a 10 year old company with 15 years of combined founder experience", None),
+        ("Over the last 25 years of experience serving customers, we grew.", None),
+        ("Our leadership team brings 30 years of experience", None),
+        ("With 20 years of experience in the market, Acme is a leader", None),
+        ("vesting over at least 4 years", None),
+        ("You don't need 10 years of experience to apply", None),
+        # A nice-to-have is not the bar.
+        ("Nice to have: 20+ years of experience with COBOL. Required: 5+ years of Python", 5),
+        ("2+ years of experience with Rust preferred. 10+ years of experience overall", 10),
+        ("10+ years of experience, cloud certification preferred", 10),
+        ("- Kubernetes is a plus\n- 8+ years of experience", 8),
         ("401(k) with 4% match after 2 years", None),
         ("Experience with Kubernetes", None),
         ("", None),
@@ -143,6 +165,12 @@ def test_only_stated_facts_are_reported() -> None:
         ("Must hold an active TS/SCI clearance.", "required"),
         ("- Active TS/SCI clearance", "required"),
         ("This position requires a Top Secret clearance.", "required"),
+        ("Security clearance required: None", None),
+        # Somebody else's requirement, or a process, is not asked of you.
+        (
+            "You will work with customers who require FedRAMP and security clearance processes.",
+            None,
+        ),
     ],
 )
 def test_clearance_is_required_only_when_the_posting_says_so(
@@ -165,6 +193,11 @@ def test_clearance_is_required_only_when_the_posting_says_so(
         ("Willingness to travel 30%", 30),
         ("up to 15% international travel", 15),
         ("Travel required: approximately 40%", 40),
+        ("Occasional travel (approximately 10 percent)", 10),
+        ("Travel benefits: 50% off flights", None),
+        ("Reduce travel time by 40% for our customers", None),
+        ("We reduced business travel emissions by 35%", None),
+        ("Some travel 100% remote", None),
     ],
 )
 def test_travel_is_only_a_number_that_belongs_to_travel(text: str, expected: int | None) -> None:
@@ -182,6 +215,20 @@ def test_travel_is_only_a_number_that_belongs_to_travel(text: str, expected: int
         ("Visa sponsorship is available.", "offered"),
         ("We will sponsor H-1B visas.", "offered"),
         ("Open to candidates with or without sponsorship", None),
+        ("Employment sponsorship isn't offered.", "not_offered"),
+        ("Sponsorship unavailable.", "not_offered"),
+        ("We are unable to sponsor candidates at this time.", "not_offered"),
+        ("Visa sponsorship: No", "not_offered"),
+        ("Sponsorship: Not available", "not_offered"),
+        ("Visa sponsorship: Yes", "offered"),
+        ("We are happy to sponsor visas; no relocation is offered", "offered"),
+        # Sponsoring something other than a person's right to work.
+        ("You will not manage event sponsorship budgets", None),
+        ("No prior experience with sponsorship programs is needed", None),
+        ("We don't just sponsor conferences, we speak at them", None),
+        ("Experience with sponsor banks is not required", None),
+        ("We sponsor the Kubernetes community", None),
+        ("We will sponsor your conference attendance", None),
     ],
 )
 def test_sponsorship_is_read_clause_by_clause(text: str, expected: str | None) -> None:

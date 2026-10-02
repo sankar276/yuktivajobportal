@@ -472,6 +472,7 @@ def test_failed_detail_requests_are_capped_and_backed_off(
     from jobportal import crawl as crawl_module
 
     monkeypatch.setattr(crawl_module, "MAX_DETAILS_PER_SOURCE", 5)
+    monkeypatch.setattr(crawl_module, "MAX_DETAIL_FAILURES_IN_A_ROW", 99)
     add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
     session.commit()
     postings = [
@@ -496,6 +497,23 @@ def test_failed_detail_requests_are_capped_and_backed_off(
     assert len(web.calls("/job/US/")) == 12  # the last two; nothing is asked twice so soon
     crawl(session, client, now=NOW + timedelta(minutes=50))
     assert len(web.calls("/job/US/")) == 12
+
+
+def test_a_board_whose_details_keep_failing_is_left_alone_for_the_pass(
+    session: Session, client: PoliteClient, web: FakeWeb
+) -> None:
+    add_source(session, SourceSpec(kind="workday", token=WD_TOKEN), "Example Corp")
+    session.commit()
+    postings = [
+        {"title": f"Architect {n}", "externalPath": f"/job/US/Architect-{n}_JR{n}"}
+        for n in range(12)
+    ]
+    web.json("POST", f"{WD_API}/jobs", {"total": 12, "jobPostings": postings})
+    for posting in postings:
+        web.add("GET", f"{WD_API}{posting['externalPath']}", httpx.Response(403))
+    (result,) = crawl(session, client, now=NOW)
+    # Three refusals in a row: it is not going to answer the other nine either.
+    assert len(web.calls("/job/US/")) == 3 and result.status == "ok"
 
 
 def test_a_posting_whose_page_is_gone_is_not_reopened_every_pass(

@@ -323,6 +323,16 @@ def test_parse_employment(label: str | None, expected: str | None) -> None:
         ("Austin, TX", None, None),
         ("", None, None),
         ("Work from home", "unspecified", True),
+        # Several places: one that is plainly remote is enough.
+        ("Remote; Austin, TX (Hybrid)", None, True),
+        ("New York, NY or Remote", None, True),
+        # Both said of the same place: not for the crawler to decide.
+        ("Hybrid (2 days remote) - Chicago, IL", None, None),
+        ("Hybrid/Remote - NYC", None, None),
+        # Said not to be.
+        ("Not Remote - Seattle, WA", None, False),
+        ("Onsite (no remote) - Reston, VA", None, False),
+        ("Remote Sensing Lab - Boulder, CO", None, None),
     ],
 )
 def test_infer_remote(location: str, workplace: str | None, expected: bool | None) -> None:
@@ -366,6 +376,14 @@ def test_infer_remote_reads_declared_types_and_synonyms(
         ("This is not a 100% remote position.", None),
         ("The team isn't fully remote yet.", None),
         ("Kubernetes platform work.", None),
+        # Said to be remote, and also tied to an office.
+        (
+            "We are a remote-first company, but this role is based in our NYC office "
+            "five days a week.",
+            None,
+        ),
+        ("This role is fully remote. Hybrid cloud experience is a plus.", True),
+        ("Fully remote team; expect to be in the office three days a week.", None),
     ],
 )
 def test_remote_from_description_respects_negation(text: str, expected: bool | None) -> None:

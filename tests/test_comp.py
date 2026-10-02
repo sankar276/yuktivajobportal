@@ -26,6 +26,11 @@ from jobportal.comp import Comp, extract_comp
         ("Salary $190k - 230k", Comp(190000, 230000, "USD", "year")),
         ("$180,000/yr - $220,000/yr", Comp(180000, 220000, "USD", "year")),
         ("Hourly: $62.50 - $78.25", Comp(62.5, 78.25, "USD", "hour")),
+        # A bare range that says what it is by its unit, or by what comes on top.
+        ("$150,000 - $200,000 a year", Comp(150000, 200000, "USD", "year")),
+        ("$150,000 - $200,000 annually", Comp(150000, 200000, "USD", "year")),
+        ("$150k-$200k + equity", Comp(150000, 200000, "USD", "year")),
+        ("Compensation\n$180,000 - $220,000 + bonus + equity", Comp(180000, 220000, "USD", "year")),
         # Base pay, not the bigger numbers quoted next to it.
         (
             "On-target earnings: $300,000 - $350,000 (50/50 split). Base $150,000 - $175,000",

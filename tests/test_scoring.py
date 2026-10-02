@@ -104,9 +104,18 @@ class FakeJob:
         ("Senior Vice President, Engineering", Seniority.executive),
         ("Executive Vice President", Seniority.executive),
         ("EVP", Seniority.executive),
+        ("Cloud Engineer, Vice President", Seniority.senior),
         # A level number counts wherever it stands.
         ("Architect II", Seniority.senior),
         ("Software Engineer III - Platform", Seniority.senior),
+        ("Software Engineer I", Seniority.junior),
+        # Not yet a full-time hire, whatever else the title says.
+        ("Intern - Platform Architect", Seniority.junior),
+        ("Trainee Architect", Seniority.junior),
+        ("Co-op Platform Engineer", Seniority.junior),
+        ("New Grad Platform Engineer", Seniority.junior),
+        ("Early Career Cloud Architect", Seniority.junior),
+        ("Internal Tools Engineer", Seniority.mid),  # "internal" is not "intern"
     ],
 )
 def test_infer_seniority(title: str, level: Seniority) -> None:
@@ -181,6 +190,18 @@ def test_infer_seniority(title: str, level: Seniority) -> None:
         ("Manila", True, 0.0, True),
         ("Remote - Peru", True, 0.0, True),
         ("REMOTE - INDIA", True, 0.0, True),
+        ("Remote - Georgia (country)", True, 0.0, True),
+        ("Remote - Nordics", True, 0.0, True),
+        ("Remote - Dominican Republic", True, 0.0, True),
+        # Declared not remote in so many words.
+        ("Not Remote - Seattle, WA", None, 0.0, True),
+        ("Onsite (no remote) - Reston, VA", None, 0.0, True),
+        ("Remote Sensing Lab - Boulder, CO", None, 0.0, True),
+        # Several places listed: one that fits is enough.
+        ("Portland, OR or Remote", None, 1.0, False),
+        ("New York, NY or Remote - US", None, 1.0, False),
+        ("U.S", None, 0.7, False),
+        ("Field - US", None, 0.7, False),
     ],
 )
 def test_judge_location(
@@ -202,6 +223,10 @@ def test_judge_location(
         ("Smallville", True),
         ("Smallville", None),
         ("Leeds", False),
+        # Says both, of the same place: hybrid, or open to remote?
+        ("Hybrid (2 days remote) - Chicago, IL", None),
+        ("Hybrid/Remote - NYC", None),
+        ("Remote - GMT+1", True),
     ],
 )
 def test_a_place_that_cannot_be_read_is_neither_accepted_nor_skipped(
@@ -214,7 +239,7 @@ def test_a_place_that_cannot_be_read_is_neither_accepted_nor_skipped(
     result = score_job(FakeJob(location=location, remote=remote), search, now=NOW)
     assert result.decision is Decision.consider
     assert result.breakdown["unsure"] is True
-    assert any("ould not tell" in reason for reason in result.reasons)
+    assert any("could not tell" in reason.lower() for reason in result.reasons)
 
 
 def test_lane_without_remote_only_accepts_listed_places(user_config: UserConfig) -> None:
@@ -222,6 +247,15 @@ def test_lane_without_remote_only_accepts_listed_places(user_config: UserConfig)
     lane.locations.remote = False
     assert judge_location(FakeJob(location="Remote - US"), lane).hard_fail is True
     assert judge_location(FakeJob(location="Remote; Austin, TX"), lane).value == 1.0
+
+
+def test_a_state_on_your_list_is_not_a_country_code(user_config: UserConfig) -> None:
+    lane = user_config.search.lanes[0].model_copy(deep=True)
+    lane.locations.onsite = ["CA", "Indiana"]
+    for place in ("San Jose, CA", "Fresno, California", "Indianapolis, IN"):
+        assert judge_location(FakeJob(location=place, remote=False), lane).value == 1.0, place
+    for place in ("Toronto, CA", "Bangalore, IN", "CA, ON, Toronto"):
+        assert judge_location(FakeJob(location=place, remote=False), lane).hard_fail, place
 
 
 def test_remote_only_lane_skips_a_role_declared_on_site(user_config: UserConfig) -> None:

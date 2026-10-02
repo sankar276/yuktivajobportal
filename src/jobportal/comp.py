@@ -20,7 +20,9 @@ _SYMBOLS = {
 _CODES = ("USD", "CAD", "AUD", "NZD", "SGD", "HKD", "GBP", "EUR", "INR")
 _SYMBOL = r"(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|S\$|HK\$|\$|£|€|₹)"
 _CODE = r"(?:USD|CAD|AUD|NZD|SGD|HKD|GBP|EUR|INR)"
-_NUMBER = r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?) ?([kK])?"
+# A number starts where a run of digits starts and has at most nine digits
+# before the point, so a long run of digits is passed over once, not once per digit.
+_NUMBER = r"(?<![\d.,])(\d{1,3}(?:,\d{3}){1,3}(?:\.\d{1,2})?|\d{1,9}(?:\.\d{1,2})?) ?([kK])?"
 _UNIT = r"(?: ?(?:/|per) ?(?:hr|hour|year|yr|annum|day|month|mo|week|wk))?"
 _RANGE_RE = re.compile(
     rf"(?P<code>{_CODE} ?)?(?P<symbol>{_SYMBOL})? ?"
@@ -62,6 +64,11 @@ _OTHER_WORDS_RE = re.compile(
     r"|\bprice[sd]?\b|\bdiscount\b|\bcredits?\b|\bdonat\w*|\bmatch(?:ing)?\b",
     re.I,
 )
+_TRAILING_UNIT_RE = re.compile(
+    r" ?(?:an?|per|/) ?(?:h(?:ou)?r|year|yr|annum)\b| ?annually\b"
+    r"| ?\+ ?(?:equity|bonus|benefits|stock|options)\b",
+    re.I,
+)
 LOOK_BACK = 160
 LOOK_AHEAD = 30
 
@@ -92,16 +99,17 @@ def _is_pay(before: str, inside: str, after: str) -> bool:
         return False  # "$40K - $60K bonus", "$100k to $500k ARR", "$10 - $20 million"
     pay, other = _last_end(_PAY_WORDS_RE, before), _last_end(_OTHER_WORDS_RE, before)
     if pay < 0 and other < 0:
-        # Nothing before it: the figures must carry their own unit ("$70/hr -
-        # $90/hr"), or be followed at once by a pay word ("... base salary").
-        # A unit that merely trails ("save $20,000 - $90,000 a year") is not enough.
-        # ("... an hour" is the one trailing unit that is taken: in a posting
-        # it is said of pay and of little else.)
+        # Nothing before it says what the figures are. They count when they
+        # carry their own unit ("$70/hr - $90/hr"), are followed at once by a
+        # pay word ("... base salary") or a unit ("... a year", "... an hour"),
+        # or by what comes on top of pay ("... + equity"). Anything else that
+        # is counted by the year ("save $20,000 - $90,000 a year") has its own
+        # word in front, and is ruled out by that word above.
         return bool(
             _HOUR_RE.search(inside)
             or _YEAR_RE.search(inside)
             or _PAY_WORDS_RE.match(after.lstrip(" "))
-            or re.match(r" ?(?:an|per|/) ?h(?:ou)?r\b", after)
+            or _TRAILING_UNIT_RE.match(after)
         )
     return pay > other  # the nearer word decides; a tie is not pay
 

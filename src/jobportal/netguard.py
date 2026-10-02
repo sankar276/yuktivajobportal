@@ -28,6 +28,7 @@ _NOT_PUBLIC = tuple(
         "2001::/32",  # Teredo
     )
 )
+_GLOBAL_UNICAST_V6 = ipaddress.ip_network("2000::/3")
 #: IPv6 prefixes that carry an IPv4 address inside them, at this bit offset.
 _EMBEDDED_V4 = (
     (ipaddress.ip_network("64:ff9b::/96"), 0),  # NAT64
@@ -58,6 +59,10 @@ def is_public_address(address: str) -> bool:
                 embedded = ipaddress.IPv4Address((int(parsed) >> shift) & 0xFFFFFFFF)
                 return is_public_address(str(embedded))
     if any(parsed in network for network in _NOT_PUBLIC if network.version == parsed.version):
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed not in _GLOBAL_UNICAST_V6:
+        # Everything public in IPv6 lives in 2000::/3. The standard library
+        # calls some of the rest "global" too, "::127.0.0.1" among it.
         return False
     return parsed.is_global and not parsed.is_multicast
 
@@ -125,6 +130,10 @@ def _split(url: str) -> SplitResult:
         raise UrlRefused(f"not a web address: {url!r}") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise UrlRefused(f"not a web address: {url!r}")
+    if "\\" in url or "@" in parts.netloc:
+        # "https://a.example\\@b.example/" names one host to one parser and
+        # another to the next. Nothing fetched here needs either form.
+        raise UrlRefused(f"not a plain web address: {url!r}")
     return parts
 
 

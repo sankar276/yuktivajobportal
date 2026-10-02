@@ -49,9 +49,24 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
     monkeypatch.setattr("jobportal.netguard.resolve", lambda _host: ())
     reset_settings_cache()
     reset_engine()
+    if os.environ.get("JOBPORTAL_TEST_DATABASE_URL"):
+        _empty_shared_database()
     yield
     reset_engine()
     reset_settings_cache()
+
+
+def _empty_shared_database() -> None:
+    """A server database outlives each test: start every one with nothing in it.
+
+    SQLite gets a new file per test. A Postgres database is shared, so what
+    one test stored (through the command line, say, which keeps its own
+    session) must not be there for the next.
+    """
+    engine = get_engine()
+    Base.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
 
 
 @pytest.fixture

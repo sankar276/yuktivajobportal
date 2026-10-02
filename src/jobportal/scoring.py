@@ -22,7 +22,13 @@ from sqlalchemy.orm import Session
 from jobportal.config import Employment, Lane, Profile, SearchConfig, Seniority
 from jobportal.db import utcnow
 from jobportal.models import Decision, Job, JobScore
-from jobportal.sources.base import REMOTE_WORDS_RE, infer_remote
+from jobportal.sources.base import (
+    MAX_LOCATION_CHARS,
+    REMOTE_WORDS_RE,
+    infer_remote,
+    remote_unclear,
+    segments,
+)
 from jobportal.text import (
     company_key,
     find_terms,
@@ -102,6 +108,11 @@ _JUNIOR = {
     "apprentice",
 }
 _EXECUTIVE = {"cto", "cio", "ciso", "ceo", "coo", "cfo", "cpo", "svp", "evp", "president"}
+#: Not yet a full-time hire, whatever else the title says.
+_TRAINEES = {"intern", "internship", "apprentice", "trainee"}
+_ENTRY_RE = re.compile(
+    r"\b(?:co-?op|new grad(?:uate)?s?|early[- ]career|entry[- ]level)\b", re.IGNORECASE
+)
 #: Words that make a title an individual contributor's, whatever rank is attached.
 _IC_ROLES = {
     "architect", "engineer", "developer", "scientist", "analyst", "administrator", "specialist",
@@ -140,19 +151,27 @@ def infer_seniority(title: str) -> Seniority:
         return Seniority.principal  # a senior customer-facing engineer, not the C-suite
     words = title_words(_CONTEXT_RE.sub(" ", title))
     present = set(words)
-    senior = "senior" in present
-    ic = bool(present & _IC_ROLES)
-
-    if ic:
+    if present & _TRAINEES or _ENTRY_RE.search(title):
+        return Seniority.junior
+    if present & _IC_ROLES:
         if "chief" in present:
             return Seniority.director  # "Chief Architect": a top engineer, not the C-suite
-    else:
-        if present & _EXECUTIVE or "chief" in present:
-            return Seniority.executive
-        if "vp" in present:
-            return Seniority.vp
-        if "avp" in present:
-            return Seniority.senior
+        level = _ladder(title, words)
+        # At a bank a "Vice President" engineer is a senior one, not an officer.
+        return max(level, Seniority.senior) if present & {"vp", "svp", "evp"} else level
+    if present & _EXECUTIVE or "chief" in present:
+        return Seniority.executive
+    if "vp" in present:
+        return Seniority.vp
+    if "avp" in present:
+        return Seniority.senior
+    return _ladder(title, words)
+
+
+def _ladder(title: str, words: list[str]) -> Seniority:
+    """The level a title's own words give it, ranks of office aside."""
+    present = set(words)
+    senior = "senior" in present
     if "director" in present or _HEAD_OF_RE.search(title):
         return Seniority.director
     if present & {"principal", "distinguished", "fellow"}:
@@ -162,6 +181,8 @@ def infer_seniority(title: str) -> Seniority:
     if "staff" in present or "lead" in present:
         return Seniority.principal if senior else Seniority.staff
     numbered = next((_LEVEL_NUMBERS[word] for word in words if word in _LEVEL_NUMBERS), None)
+    if numbered is None and words[-1:] == ["i"]:
+        numbered = Seniority.junior  # "Software Engineer I"
     if "architect" in present:
         if numbered is not None:
             return max(numbered, Seniority.senior)  # "Architect II"
@@ -238,7 +259,7 @@ _US_CITY_RE = re.compile(
 # America", "Americas"). "US" only in capitals ("us" is a word).
 _US_COUNTRY_RE = re.compile(
     r"(?<![A-Za-z])(?:US|USA|AMER)(?![A-Za-z])"
-    r"|(?i:\bunited states(?: of america)?\b|\bu\.s\.a?\.?(?![A-Za-z])|\bamericas\b|\bnoram\b"
+    r"|(?i:\bunited states(?: of america)?\b|\bu\.s(?:\.a)?\.?(?![A-Za-z])|\bamericas\b|\bnoram\b"
     r"|\bamerica\b(?<!latin america)(?<!south america)(?<!central america))"
 )
 _US_STATE_NAME_RE = re.compile(
@@ -296,17 +317,25 @@ _ELSEWHERE = [
     "Brisbane", "Perth", "Auckland", "Wellington", "Tel Aviv", "Haifa", "Dubai", "Abu Dhabi",
     "Riyadh", "Doha", "Cairo", "Lagos", "Nairobi", "Cape Town", "Johannesburg", "Sao Paulo",
     "Rio de Janeiro", "Buenos Aires", "Bogota", "Medellin", "Lima", "Santiago", "Mexico City",
-    "Guadalajara", "Monterrey", "Tbilisi",
+    "Guadalajara", "Monterrey", "Tbilisi", "Dominican Republic", "Jamaica", "El Salvador",
+    "Paraguay", "Honduras", "Nicaragua", "Cuba", "Haiti", "Trinidad", "Bahamas", "Barbados",
+    "Belize", "Guyana", "Caribbean", "Albania", "Andorra", "Bosnia", "Kosovo", "Liechtenstein",
+    "Moldova", "Monaco", "Montenegro", "Macedonia", "Turkiye", "Azerbaijan", "Uzbekistan",
+    "Kyrgyzstan", "Mongolia", "Myanmar", "Laos", "Brunei", "Iran", "Iraq", "Jordan", "Lebanon",
+    "Oman", "Algeria", "Angola", "Botswana", "Cameroon", "Ivory Coast", "Senegal", "Tanzania",
+    "Uganda", "Rwanda", "Zambia", "Zimbabwe", "Mauritius", "Namibia", "Mozambique", "Fiji",
+    "Oceania", "Scandinavia", "Nordics", "Nordic", "Benelux", "Balkans", "Baltics", "Iberia",
+    "DACH", "CEE", "MENA", "ANZ",
 ]  # fmt: skip
 _ELSEWHERE_RE = re.compile(
     r"(?<![A-Za-z])(?:"
     + "|".join(re.escape(place) for place in sorted(_ELSEWHERE, key=len, reverse=True))
     # Workday writes Canada as "CA, ON, Toronto": country code, then province.
     + r"|CA,\s*(?:ON|BC|QC|AB|MB|SK|NS|NB)"
+    + r"|Georgia\s*\((?:the\s+)?country\)"
     + r")(?![A-Za-z])",
     re.IGNORECASE,
 )
-_SEGMENT_RE = re.compile(r"\s*(?:;|\||\n|\s+(?i:or)\s+|\s+/\s+)\s*")
 # Words in a location that name no place at all. The joining words only in
 # lower case: "IN" and "OR" in capitals may be a country or a state.
 _NO_PLACE_RE = re.compile(
@@ -315,7 +344,7 @@ _NO_PLACE_RE = re.compile(
     r"|\bto be determined\b|\btbd\b|\bn/?a\b|\bany(?: ?where)?\b"
     r"|\b(?:hybrid|on[- ]?site|in[- ]office|in[- ]person|optional|eligible|friendly|first|fully"
     r"|only|based|role|position|options?|available|preferred|locations?|office|distributed|open"
-    r"|work|from|home)\b)"
+    r"|work|from|home|field)\b)"
     r"|\b(?:and|or|the|in|within|of|to)\b"
 )
 
@@ -355,7 +384,7 @@ def _us_evidence(segment: str) -> _UsEvidence:
     ("Gurugram, IN", "Hamburg, DE"); standing alone it counts only when it
     cannot be a country's code instead ("TX, Remote", but not "CA, Remote").
     """
-    text = _fold(segment)
+    text = _fold(segment[:MAX_LOCATION_CHARS])
     country = bool(_US_COUNTRY_RE.search(text))
     rest = _US_COUNTRY_RE.sub(" ", text)
     seen = {"state": False, "city": False}
@@ -379,6 +408,8 @@ def _us_evidence(segment: str) -> _UsEvidence:
         name = match.group(1).lower()
         if name.upper() in _FOREIGN_CITIES.get(city, ()):
             return match.group(0)  # "Tbilisi, Georgia" is the country
+        if name == "georgia" and re.match(r"\s*\((?:the\s+)?country\)", rest[match.end() :], re.I):
+            return match.group(0)
         alone = match.group(0).lower() == name
         seen["city" if alone and name in _CITY_STATES else "state"] = True
         return " "
@@ -412,13 +443,26 @@ def _place_in(place: str, text: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z]){re.escape(place)}(?![A-Za-z])", text, flags))
 
 
+def _is_onsite(place: str, text: str) -> bool:
+    """Is ``place``, one you would work on-site in, named by this location?
+
+    A place that is a US state ("CA", "Indiana") counts only where the
+    location means the state: "Toronto, CA" and "Bangalore, IN" do not.
+    """
+    if not _place_in(place, text):
+        return False
+    if _with_state_codes(place).strip() not in _STATE_CODES:
+        return True
+    return any(_place_in(place, part) and mentions_us(part) for part in _segments(text))
+
+
 def _wants_us(regions: list[str]) -> bool:
     return any(region.strip().lower() in _US_NAMES for region in regions)
 
 
 def _segments(text: str) -> list[str]:
     """A posting often lists several places; each is judged on its own."""
-    return [part for part in _SEGMENT_RE.split(text) if part.strip()]
+    return segments(text)
 
 
 def _foreign_city(text: str) -> bool:
@@ -480,9 +524,9 @@ def judge_location(job: Scorable, lane: Lane) -> LocationFit:
     ``unsure``, which keeps the job off the shortlist until you have looked.
     """
     rules = lane.locations
-    text = job.location or ""
+    text = (job.location or "")[:MAX_LOCATION_CHARS]
     shown = f" ({text})" if text else ""
-    onsite_hit = next((place for place in rules.onsite if _place_in(place, text)), None)
+    onsite_hit = next((place for place in rules.onsite if _is_onsite(place, text)), None)
     remote = job.remote
     if remote is None and infer_remote(text):
         remote = True  # "Virtual - US", "Home Based", "Nationwide"
@@ -512,6 +556,10 @@ def judge_location(job: Scorable, lane: Lane) -> LocationFit:
         return LocationFit(0.0, f"On-site or hybrid; this lane is remote only{shown}", True)
     if not _named_place(text):
         return LocationFit(0.5, f"Location not stated{shown}", False)
+    if job.remote is None and rules.remote and remote_unclear(text):
+        # "Hybrid (2 days remote)", "Hybrid/Remote - NYC": not for this app to decide.
+        note = f"Says both remote and on-site or hybrid; could not tell which{shown}"
+        return LocationFit(0.5, note, False, True)
     if (
         job.remote is None
         and rules.remote

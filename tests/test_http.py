@@ -235,6 +235,20 @@ def test_the_connection_goes_to_the_address_that_was_checked(
         client.close()
 
 
+def test_a_name_with_no_answer_is_not_looked_up_again_by_the_http_library(
+    settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No answer when checked, then a private one a moment later, must not connect."""
+    lookups: list[str] = []
+    monkeypatch.setattr("jobportal.netguard.resolve", lambda host: lookups.append(host) or ())
+    with PoliteClient(settings, pin=True, sleep=lambda _s: None) as client:
+        with pytest.raises(FetchError, match="does not resolve"):
+            client._target("https://later.example/careers")
+        # A literal public address needs no lookup and is used as it stands.
+        assert client._target("https://93.184.216.34/x") == ("https://93.184.216.34/x", {}, {})
+    assert lookups == ["later.example"]
+
+
 def test_a_pinned_request_reaches_the_checked_address_under_its_own_name(
     settings, form_server, monkeypatch: pytest.MonkeyPatch
 ) -> None:

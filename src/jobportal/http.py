@@ -158,9 +158,15 @@ class PoliteClient:
         handshake, so the right site answers and its certificate is verified.
         """
         addresses = netguard.public_addresses(url, allow_local=self.settings.allow_local_addresses)
-        if not self._pin or not addresses:
+        if not self._pin:
             return url, {}, {}
         parts = urlsplit(url)
+        if not addresses:
+            if netguard.is_ip((parts.hostname or "").strip("[]")):
+                return url, {}, {}  # a literal address: it is what was checked
+            # A name with no answer now must not be looked up again by the
+            # HTTP library a moment later: that second answer was never checked.
+            raise FetchError(f"{parts.hostname} does not resolve")
         address = sorted(addresses, key=lambda a: ":" in a)[0]  # IPv4 first
         netloc = f"[{address}]" if ":" in address else address
         if parts.port is not None:

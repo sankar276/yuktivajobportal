@@ -238,6 +238,7 @@ ALIASES: dict[str, str] = {
     "infrastructure-as-code": "iac",
     "ci/cd": "cicd",
     "ci cd": "cicd",
+    "ci and cd": "cicd",
     "continuous integration": "cicd",
     "continuous delivery": "cicd",
     "golang": "go",
@@ -287,11 +288,16 @@ _SKILL_BEFORE_RE = re.compile(
 )
 _WITH_BEFORE_RE = re.compile(r"(?:^|[\s(])(?:with|using)\s+$", re.IGNORECASE)
 _SKILL_AFTER_RE = re.compile(r"^\s*(?:[,/);|]|\band\b|\bor\b|$|\(|\d)", re.IGNORECASE)
-# What follows makes it an ordinary word after all: "Go-live", "Go to", "R&D",
-# "C-suite", "Salt Lake City".
+# What follows makes it an ordinary word after all: "Go-live", "Go/No-Go",
+# "Go to", "Go!", "R&D", "C-suite", "Salt Lake City".
 _WORD_AFTER_RE = re.compile(
-    r"^(?:[-/]\w|\s*&|\s+(?:to|above|beyond|live|ahead|big|forward|further|back|home|public"
-    r"|green|no[- ]go|us|lake)\b)",
+    r"^(?:-\w|/\s*no\b|\s*[&!]|\s+(?:to|above|beyond|live|ahead|big|forward|further|back|home"
+    r"|public|green|no[- ]go|us|lake)\b)",
+    re.IGNORECASE,
+)
+# After a name that is also a verb, what makes it the product: "Harness pipelines".
+_PRODUCT_AFTER_RE = re.compile(
+    r"^\s+(?:pipelines?|ci\b|cd\b|platform|jobs?|sql|streaming|clusters?|delegates?)",
     re.IGNORECASE,
 )
 _LIST_BEFORE_RE = re.compile(r"(?:[,/(|\u2022\u00b7]\s*|^\s*[-*]\s*)$")
@@ -342,7 +348,10 @@ def _term_pattern(term: str) -> re.Pattern[str] | None:
     body = "|".join(parts)
     # \b does not work next to symbols (c++, .net, ci/cd); use explicit guards.
     # A version number may follow directly: "C++17", "Java 21", "Python3".
-    return re.compile(rf"(?<![A-Za-z0-9+#])(?:{body})(?![A-Za-z+#])", re.IGNORECASE)
+    # Not inside an address: "hr@example.ai" does not mention AI.
+    return re.compile(
+        rf"(?<![A-Za-z0-9+#@])(?<![A-Za-z0-9]\.)(?:{body})(?![A-Za-z+#])", re.IGNORECASE
+    )
 
 
 def _ambiguous_names(term: str) -> tuple[str, ...]:
@@ -357,13 +366,15 @@ def _as_a_skill(text: str, name: str) -> bool:
     """Is ``name`` ("go", "r", "helm") used in ``text`` the way a skill is named?"""
     strict = name in _AMBIGUOUS
     proper = _AMBIGUOUS.get(name) or (name.capitalize(),)
-    pattern = rf"(?<![A-Za-z0-9+#.]){re.escape(name)}(?![A-Za-z0-9+#])"
+    pattern = rf"(?<![A-Za-z0-9+#.@]){re.escape(name)}(?![A-Za-z0-9+#])"
     for match in re.finditer(pattern, text, re.IGNORECASE):
         found = match.group(0)
         before = text[max(0, match.start() - 14) : match.start()].split("\n")[-1]
         after = text[match.end() : match.end() + 14].split("\n")[0]
         if _WORD_AFTER_RE.match(after) or _LABEL_BEFORE_RE.search(before):
             continue
+        if len(name) == 1 and _lone_letter_beside(before, after):
+            continue  # "A/R", "B/C": letters, not languages
         listed = bool(_SKILL_AFTER_RE.match(after))
         if found in proper:
             if listed or _SKILL_BEFORE_RE.search(before):
@@ -371,17 +382,22 @@ def _as_a_skill(text: str, name: str) -> bool:
             if strict:
                 continue
             lead = before.strip()
-            if lead in _BULLETS:
-                if name not in _VERBS:
-                    return True  # "- Helm chart development"
-            elif lead and not lead.endswith((".", "!", "?")):
-                return True  # a capital inside a sentence: "Deploying Helm charts"
+            starts = not lead or lead in _BULLETS or lead.endswith((".", "!", "?"))
+            if not starts or name not in _VERBS or _PRODUCT_AFTER_RE.match(after):
+                return True  # "Deploying Helm charts", "Flux CD", "Harness pipelines"
         elif found.islower():
             if _LIST_BEFORE_RE.search(before) and _LIST_AFTER_RE.match(after):
-                return True
-            if not strict and listed and _WITH_BEFORE_RE.search(before):
-                return True  # "experience with helm, kustomize"
+                return True  # "python, go, rust"
+            if listed and _WITH_BEFORE_RE.search(before):
+                return True  # "experience with go and python", "with helm, kustomize"
     return False
+
+
+def _lone_letter_beside(before: str, after: str) -> bool:
+    """Across a slash sits another single letter: "A/R and A/P", not "C/C++"."""
+    left = re.search(r"(?<![A-Za-z0-9+#])[A-Za-z]/$", before)
+    right = re.match(r"/[A-Za-z](?![A-Za-z0-9+#])", after)
+    return bool(left or right)
 
 
 def has_term(text: str, term: str) -> bool:

@@ -39,6 +39,9 @@ PARTIAL_GIVE_UP_AFTER = timedelta(days=21)
 MAX_PROBES_PER_SOURCE = 10
 #: Detail requests per source per crawl: attempts, whether or not they succeed.
 MAX_DETAILS_PER_SOURCE = 40
+#: This many detail requests failing in a row and the board is left alone until
+#: the next reading: it is having trouble, and more requests will not help it.
+MAX_DETAIL_FAILURES_IN_A_ROW = 3
 #: A failed detail request is retried after 2, 4, 8 ... hours, at most this long.
 DETAIL_RETRY_MAX = timedelta(days=7)
 #: Longer markup is cut before it is parsed; no posting is this long.
@@ -627,13 +630,13 @@ def _hydrate(
         .where(Job.source_id == source.id, Job.needs_detail.is_(True), Job.closed_at.is_(None))
         .order_by(Job.first_seen_at.desc(), Job.id.desc())
     ).all()
-    hydrated = attempts = 0
+    hydrated = attempts = failures_in_a_row = 0
     for job in pending:
         if title_filter is not None and not title_filter(job.title):
             continue
         if job.detail_retry_at is not None and job.detail_retry_at > now:
             continue
-        if attempts >= MAX_DETAILS_PER_SOURCE:
+        if attempts >= MAX_DETAILS_PER_SOURCE or failures_in_a_row >= MAX_DETAIL_FAILURES_IN_A_ROW:
             break
         attempts += 1
         try:
@@ -655,7 +658,9 @@ def _hydrate(
             job.detail_failures += 1
             job.detail_retry_at = _retry_at(job, now)
             session.commit()
+            failures_in_a_row += 1
             continue
+        failures_in_a_row = 0
         if detail.needs_detail:
             continue  # the adapter could not fill it in; try again next time
         try:

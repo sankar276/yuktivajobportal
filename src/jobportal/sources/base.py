@@ -158,7 +158,7 @@ def parse_employment(value: str | None) -> str | None:
 
 
 REMOTE_WORDS_RE = re.compile(
-    r"\bremote\b|\bvirtual\b|\btelecommut\w*|\bwork(?:ing)? from home\b|\bwfh\b"
+    r"\bremote\b(?!\s+sensing)|\bvirtual\b|\btelecommut\w*|\bwork(?:ing)? from home\b|\bwfh\b"
     r"|\bhome[- ]?based\b|\bhome office\b|\banywhere\b|\bnationwide\b",
     re.IGNORECASE,
 )
@@ -166,6 +166,41 @@ _PLACE_BOUND_RE = re.compile(
     r"\bon[- ]?site\b|\bin[- ]office\b|\bin[- ]person\b|\bhybrid\b|\boffice[- ]based\b",
     re.IGNORECASE,
 )
+_NOT_REMOTE_RE = re.compile(r"\b(?:not|non|no)[\s-]+(?:fully[\s-]+)?remote\b", re.IGNORECASE)
+#: No location is longer than this; what a board sends beyond it is not read.
+MAX_LOCATION_CHARS = 500
+_SEGMENT_RE = re.compile(r";|\|| or | / ")
+
+
+def segments(location: str | None) -> list[str]:
+    """The places a location lists ("Austin, TX; Remote"), each to be read on its own.
+
+    Blanks are collapsed first, so that nothing a board sends (a hundred
+    thousand spaces, say) can make the splitting slow.
+    """
+    text = " ".join((location or "")[:MAX_LOCATION_CHARS].replace("\n", ";").split())
+    return [part.strip() for part in _SEGMENT_RE.split(text) if part.strip()]
+
+
+def _reading(part: str) -> str:
+    """What one place says about where the work is done: remote, bound, mixed or nothing."""
+    if _NOT_REMOTE_RE.search(part):
+        return "bound"  # "Not Remote - Seattle", "Onsite (no remote)"
+    remote = bool(REMOTE_WORDS_RE.search(part))
+    bound = bool(_PLACE_BOUND_RE.search(part))
+    if remote and bound:
+        return "mixed"  # "Hybrid (2 days remote)", "Hybrid/Remote - NYC"
+    return "remote" if remote else ("bound" if bound else "")
+
+
+def _readings(location: str) -> list[str]:
+    return [_reading(part) for part in segments(location)]
+
+
+def remote_unclear(location: str | None) -> bool:
+    """The location says both "remote" and "hybrid" or "on-site" of the same place."""
+    readings = _readings(location or "")
+    return "remote" not in readings and "mixed" in readings
 
 
 def infer_remote(location: str | None, workplace_type: str | None = None) -> bool | None:
@@ -173,7 +208,9 @@ def infer_remote(location: str | None, workplace_type: str | None = None) -> boo
 
     A declared workplace type decides, whatever its spelling ("Remote",
     "Fully Remote", "Remote Eligible", "Virtual", "On Site", "HYBRID").
-    Otherwise the location string is read for the usual words for remote.
+    Otherwise the location string is read, one listed place at a time: any
+    place that is plainly remote makes the role remote; a place that says
+    both ("Hybrid (2 days remote)") is left as not known rather than guessed.
     """
     workplace = re.sub(r"[\s_-]+", " ", (workplace_type or "").strip())
     if workplace:
@@ -181,14 +218,12 @@ def infer_remote(location: str | None, workplace_type: str | None = None) -> boo
             return False
         if REMOTE_WORDS_RE.search(workplace):
             return True
-    text = location or ""
-    if not text.strip():
-        return None
-    if REMOTE_WORDS_RE.search(text):
+    readings = _readings(location or "")
+    if "remote" in readings:
         return True
-    if _PLACE_BOUND_RE.search(text):
-        return False
-    return None
+    if "mixed" in readings:
+        return None
+    return False if "bound" in readings else None
 
 
 _REMOTE_TEXT_RE = re.compile(
@@ -199,6 +234,15 @@ _REMOTE_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _NOT_BEFORE_RE = re.compile(r"\b(?:not|no|non|never)\b|n['’]t\b", re.IGNORECASE)
+# The same description also ties this role to an office: "a remote-first
+# company, but this role is based in our NYC office five days a week".
+_OFFICE_BOUND_RE = re.compile(
+    r"\b(?:this|the) (?:role|position|job)\b[^.\n]{0,40}"
+    r"\b(?:based|located|on[- ]?site|in[- ]office|in[- ]person|hybrid)\b"
+    r"|\b(?:\d|one|two|three|four|five) days? (?:a|per|each) week\b[^.\n]{0,25}\b(?:office|on[- ]?site)"
+    r"|\b(?:office|on[- ]?site)\b[^.\n]{0,25}\b(?:\d|one|two|three|four|five) days? (?:a|per|each) week\b",
+    re.IGNORECASE,
+)
 
 
 def remote_from_description(text: str | None) -> bool | None:
@@ -211,7 +255,8 @@ def remote_from_description(text: str | None) -> bool | None:
         before = (text or "")[max(0, match.start() - 40) : match.start()]
         clause = re.split(r"[.;\n]", before)[-1]
         if not _NOT_BEFORE_RE.search(clause) and not _NOT_BEFORE_RE.search(match.group(0)):
-            return True
+            # Said to be remote, and also tied to an office: not for us to settle.
+            return None if _OFFICE_BOUND_RE.search(text or "") else True
     return None
 
 

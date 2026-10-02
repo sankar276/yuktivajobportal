@@ -39,6 +39,7 @@ def test_public_hosts(host: str) -> None:
     [
         "100.64.0.1", "100.100.100.200", "192.88.99.1", "198.18.0.1", "fec0::1",
         "64:ff9b::7f00:1", "2002:7f00:1::", "::ffff:10.0.0.1", "224.0.0.1", "not an address", "",
+        "::127.0.0.1", "::7f00:1", "::8.8.8.8", "::1", "fe80::1", "fd00::1",
     ],
 )  # fmt: skip
 def test_addresses_that_are_not_public(address: str) -> None:
@@ -98,6 +99,20 @@ def test_check_public_url() -> None:
     with pytest.raises(UrlRefused, match="not https"):
         check_public_url("http://example.com/apply", require_https=True)
     check_public_url("http://127.0.0.1:9000/form", allow_local=True, require_https=True)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1\\@8.8.8.8/",  # one host to one parser, another to the next
+        "https://evil.test\\@jobs.lever.co/acme/123/apply",
+        "https://user:pass@jobs.lever.co/acme",
+        "https://jobs.lever.co@93.184.216.34/",
+    ],
+)
+def test_addresses_with_a_backslash_or_a_user_part_are_refused(url: str) -> None:
+    with pytest.raises(UrlRefused, match="plain web address"):
+        check_public_url(url)
 
 
 def test_crawler_refuses_local_addresses(client: PoliteClient, web: FakeWeb) -> None:
