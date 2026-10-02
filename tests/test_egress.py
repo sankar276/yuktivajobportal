@@ -14,8 +14,10 @@ from playwright.sync_api import Browser
 from playwright.sync_api import Error as PlaywrightError
 
 from jobportal import browser as browser_module
+from jobportal.apply.answers import AnswerBook
 from jobportal.apply.forms import filler
 from jobportal.browser import BrowserUnavailable, start_chromium
+from jobportal.config import UserConfig
 from jobportal.egress import EgressProxy
 from jobportal.settings import Settings
 
@@ -155,9 +157,44 @@ def test_plain_http_is_relayed_as_an_ordinary_request(site: Site) -> None:
     ):
         response = client.post(site.url("/jobs?team=platform"), content=b"x" * 100_000)
         assert (response.status_code, response.text) == (200, "the listing")
+        assert response.headers["connection"] == "close"
     assert site.requests == [("POST", "/jobs?team=platform")]  # origin form, body delivered
     head = site.heads[0].lower()
     assert "proxy-connection" not in head and "connection: close" in head
+
+
+def test_a_server_cannot_keep_the_browsers_connection_for_the_next_site() -> None:
+    """Whatever the server says, the browser is told the connection ends with the response."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(65536)
+            connection.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+            connection.sendall(
+                b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=60\r\n"
+                b"Content-Length: 2\r\n\r\nok"
+            )
+            connection.recv(65536)  # hold the line open, as a server set on reuse would
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        with EgressProxy(allow=lambda _address, at: at == port) as proxy:
+            address = ("127.0.0.1", int(proxy.url.rsplit(":", 1)[1]))
+            with socket.create_connection(address, 5) as conn:
+                conn.settimeout(5)
+                conn.sendall(f"GET http://127.0.0.1:{port}/ HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+                received = b""
+                while not received.endswith(b"ok"):
+                    received += conn.recv(65536)
+    finally:
+        listener.close()
+    interim, final = received.split(b"\r\n\r\n", 1)
+    assert interim == b"HTTP/1.1 100 Continue"
+    assert b"Connection: close" in final and b"keep-alive" not in final.lower()
+    assert final.endswith(b"\r\n\r\nok")
 
 
 def test_connect_tunnels_bytes_untouched(site: Site) -> None:
@@ -256,6 +293,24 @@ def test_form_pages_are_opened_through_the_proxy(
     filler._new_page(chromium, settings)
     assert chromium.new_context.call_args.kwargs == {}
     assert not chromium.new_context.return_value.route.called
+
+
+def test_a_browser_that_cannot_be_guarded_opens_nothing(
+    settings: Settings, user_config: UserConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """If the proxied context cannot be made, the form is handed over, not opened unguarded."""
+    monkeypatch.setattr(filler, "behind_proxy", lambda: False)
+    monkeypatch.setattr(filler, "_refusal", lambda *_args, **_kwargs: None)
+    chromium = MagicMock()
+    chromium.new_context.side_effect = PlaywrightError("Browser was launched without a proxy")
+    book = AnswerBook(user_config.profile, {}, tmp_path / "resume.pdf")
+    url = "https://jobs.lever.co/acme/1/apply"
+    for run in (filler.prepare, filler.submit, filler.assist):
+        outcome = run(chromium, url, book, settings=settings)
+        assert outcome.status == "needs_human"
+        assert "could not be set up to open the page safely" in outcome.blockers[0]["detail"]
+    assert chromium.new_context.call_count == 3  # tried each time, never retried without the proxy
+    assert all("proxy" in call.kwargs for call in chromium.new_context.call_args_list)
 
 
 # ---------------------------------------------------------------------- sandbox

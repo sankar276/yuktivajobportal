@@ -9,7 +9,9 @@ every address the name gives must be public; and the connection is then made
 to that very address.
 
 Nothing is read or changed on the way: TLS passes through untouched
-(``CONNECT``), and plain HTTP is relayed one request per connection.
+(``CONNECT``). Plain HTTP is relayed one request per connection, and both
+sides are told so (``Connection: close``), because a connection the browser
+kept would carry its next request, for whatever site, to this one's address.
 """
 
 from __future__ import annotations
@@ -145,7 +147,7 @@ class _Handler(socketserver.BaseRequestHandler):
                     # One request per connection, so the next one is checked afresh.
                     lines = [f"{method} {path} {version}", *kept, "Connection: close", "", ""]
                     upstream.sendall("\r\n".join(lines).encode("latin-1") + rest)
-                _relay(client, upstream)
+                _relay(client, upstream, close_after_response=method.upper() != "CONNECT")
             except OSError:
                 return
 
@@ -184,9 +186,27 @@ def _reply(client: socket.socket, status: int, reason: str) -> None:
         return
 
 
-def _relay(client: socket.socket, upstream: socket.socket) -> None:
-    """Copy bytes both ways until either side closes or nothing moves for a while."""
+def _closing(head: bytes) -> bytes:
+    """A response head that tells the browser this connection ends with the response."""
+    status, *headers = head.split(b"\r\n")
+    kept = [
+        line
+        for line in headers
+        if line.split(b":", 1)[0].strip().lower().decode("latin-1") not in _HOP_HEADERS
+    ]
+    return b"\r\n".join([status, *kept, b"Connection: close", b"", b""])
+
+
+def _relay(
+    client: socket.socket, upstream: socket.socket, *, close_after_response: bool = False
+) -> None:
+    """Copy bytes both ways until either side closes or nothing moves for a while.
+
+    With ``close_after_response`` the head of the response is rewritten on its
+    way back to say ``Connection: close``, whatever the server said.
+    """
     other = {client: upstream, upstream: client}
+    held: bytes | None = b"" if close_after_response else None  # response head, not yet passed on
     with selectors.DefaultSelector() as selector:
         selector.register(client, selectors.EVENT_READ)
         selector.register(upstream, selectors.EVENT_READ)
@@ -200,7 +220,20 @@ def _relay(client: socket.socket, upstream: socket.socket) -> None:
                 data = source.recv(65536)
                 if not data:
                     return
-                other[source].sendall(data)
+                if source is client or held is None:
+                    other[source].sendall(data)
+                    continue
+                held += data
+                while held is not None and b"\r\n\r\n" in held:
+                    head, _, rest = held.partition(b"\r\n\r\n")
+                    if head[:10] in (b"HTTP/1.1 1", b"HTTP/1.0 1"):
+                        client.sendall(head + b"\r\n\r\n")  # "100 Continue": more to come
+                        held = rest
+                    else:
+                        client.sendall(_closing(head) + rest)
+                        held = None
+                if held is not None and len(held) > MAX_HEAD_BYTES:
+                    return  # no end to the response head: not HTTP
 
 
 _shared: EgressProxy | None = None

@@ -263,6 +263,15 @@ def _new_page(browser: Browser, settings: Settings) -> tuple[BrowserContext, Pag
     return context, page
 
 
+def _no_page(error: PlaywrightError) -> FormOutcome:
+    """The guarded context could not be created: hand the form over, never open it unguarded."""
+    detail = (
+        "The browser could not be set up to open the page safely "
+        f"({str(error).splitlines()[0]}), so the page was not opened."
+    )
+    return FormOutcome(status="needs_human", blockers=[{"kind": "page_error", "detail": detail}])
+
+
 # --------------------------------------------------------------------- scan
 
 
@@ -576,7 +585,10 @@ def prepare(
     if refused:
         return refused
 
-    context, page = _new_page(browser, settings)
+    try:
+        context, page = _new_page(browser, settings)
+    except PlaywrightError as exc:
+        return _no_page(exc)
     try:
         _open(page, url)
         elsewhere = _off_site(page, allowed_hosts)
@@ -618,7 +630,10 @@ def submit(
     if refused:
         return refused
 
-    context, page = _new_page(browser, settings)
+    try:
+        context, page = _new_page(browser, settings)
+    except PlaywrightError as exc:
+        return _no_page(exc)
     shots: list[str] = []
     plan: FormPlan | None = None
     pressed = False
@@ -731,7 +746,10 @@ def assist(
     if refused:
         return refused
 
-    context, page = _new_page(browser, settings)
+    try:
+        context, page = _new_page(browser, settings)
+    except PlaywrightError as exc:
+        return _no_page(exc)
     shots: list[str] = []
     try:
         _open(page, url)
