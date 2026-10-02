@@ -170,6 +170,27 @@ def prepare_pending(
             session.rollback()
             log.exception("preparing job %s failed", job.id)
             summary.errors.append(f"Preparing '{job.title}' at {job.company_name}: {exc}")
+            _give_up_preparing(session, user.id, job.id, f"{type(exc).__name__}: {exc}")
+
+
+def _give_up_preparing(session: Session, user_id: int, job_id: int, error: str) -> None:
+    """Park an application whose preparation crashed, so it is not retried every pass.
+
+    Retrying would open the application page again every few seconds for as
+    long as the problem lasts. It waits for you to ask again instead.
+    """
+    try:
+        application = session.scalar(
+            select(Application).where(Application.user_id == user_id, Application.job_id == job_id)
+        )
+        if application is None or application.status != AppStatus.preparing.value:
+            return
+        application.status = AppStatus.failed.value
+        application.error = f"Preparing this application failed ({error}). Nothing was sent."
+        session.commit()
+    except Exception:
+        session.rollback()
+        log.exception("could not park the application for job %s", job_id)
 
 
 def send_approved(

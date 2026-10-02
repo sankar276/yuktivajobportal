@@ -297,27 +297,34 @@ def prepare_application(
     application = session.scalar(
         select(Application).where(Application.user_id == user.id, Application.job_id == job.id)
     )
-    if application is not None:
+    if application is None:
+        application = Application(
+            user_id=user.id,
+            job_id=job.id,
+            channel=choose_channel(job, settings).value,
+            status=AppStatus.preparing.value,
+        )
+        session.add(application)
+    else:
         # The caller's list may be minutes old: work from the row as it is now.
         session.flush()
         session.refresh(application)
         if application.status != AppStatus.preparing.value:
             # Approved, sent, dismissed, waiting on you: never re-plan underneath it.
             return application
-    if application is None:
-        application = Application(
-            user_id=user.id, job_id=job.id, channel="", status=AppStatus.preparing.value
-        )
-        session.add(application)
-        session.flush()
+    # Nothing is written to the application again until the plan is complete,
+    # and no database lock is held while the slow work (rendering the resume,
+    # reading the form) runs. If you dismiss it meanwhile, your change goes
+    # through, the final write below fails on the row's version, and your
+    # decision stands.
+    session.commit()
 
-    application.channel = choose_channel(job, settings).value
-    application.blockers = []
-    application.error = ""
-    application.auto = False
-
+    channel = choose_channel(job, settings).value
     stop = _hard_stop(session, config, user, job, application.id)
     if stop is not None:
+        application.channel = channel
+        application.auto = False
+        application.error = ""
         application.status = AppStatus.skipped.value
         application.blockers = [stop]
         add_event(application, "skipped", reason=stop["kind"], detail=stop["detail"])
@@ -339,29 +346,35 @@ def prepare_application(
             llm=llm,
         )
     except BrowserUnavailable as exc:
+        application.channel = channel
+        application.auto = False
         application.status = AppStatus.needs_human.value
         application.blockers = [{"kind": "browser", "detail": str(exc)}]
         session.flush()
         return application
-    application.resume_variant_id = variant.id
+    session.commit()
 
     blockers: list[dict[str, str]] = []
     ready = False
-    if application.channel == Channel.email.value:
+    needs_answers = False
+    prepared: dict[str, Any]
+    if channel == Channel.email.value:
         draft = compose(
             job, config.profile, variant, attach_docx=config.search.policy.email.attach_docx
         )
         client_name, vendor_name = ledger.parties(job)
-        application.prepared = {**draft.to_prepared(), "client": client_name, "vendor": vendor_name}
+        prepared = {**draft.to_prepared(), "client": client_name, "vendor": vendor_name}
         if not settings.smtp_configured:
-            blockers.append(_save_draft_instead(settings, config, application))
+            blocker, prepared = _save_draft_instead(settings, config, application.id, prepared)
+            blockers.append(blocker)
         else:
             ready = True
-    elif application.channel == Channel.form.value:
+    elif channel == Channel.form.value:
         assert job.apply_url is not None
         book = AnswerBook(
             config.profile, load_answers(session, user.id), Path(variant.pdf_path or "")
         )
+        session.commit()  # reading the answers opened a transaction; close it before the browser
         outcome = filler.prepare(
             browser.get(),
             job.apply_url,
@@ -370,14 +383,13 @@ def prepare_application(
             client=client,
             allowed_hosts=form_hosts(job, settings),
         )
-        prepared = outcome.plan.to_prepared() if outcome.plan else {"channel": "form"}
-        application.prepared = {**prepared, "url": job.apply_url, "resume": variant.pdf_path}
+        planned = outcome.plan.to_prepared() if outcome.plan else {"channel": "form"}
+        prepared = {**planned, "url": job.apply_url, "resume": variant.pdf_path}
         blockers.extend(outcome.blockers)
         ready = outcome.status == "ready"
-        if outcome.status == "needs_answers":
-            application.status = AppStatus.needs_answers.value
+        needs_answers = outcome.status == "needs_answers"
     else:
-        application.prepared = {"channel": "manual", "url": job.url, "resume": variant.pdf_path}
+        prepared = {"channel": "manual", "url": job.url, "resume": variant.pdf_path}
         if job.source.kind == SourceKind.workday.value:
             why = (
                 "Workday applications need an account on the company's site, so this one is yours."
@@ -388,31 +400,36 @@ def prepare_application(
             {"kind": "manual", "detail": f"{why} Your tailored resume is ready to upload."}
         )
 
-    warnings = _sender_warnings(job, application.channel)
+    warnings = _sender_warnings(job, channel)
     warning = _ledger_warning(session, config, user, job, application.id, now)
     if warning is not None:
         warnings.append(warning)
     notes: list[str] = []
+    status = AppStatus.needs_answers.value if needs_answers else AppStatus.needs_human.value
+    auto = False
     if blockers:
-        application.status = AppStatus.needs_human.value
+        status = AppStatus.needs_human.value
     elif ready:
         decision = auto_decision(
-            session, user.id, config.search.policy, job, score, application.channel, now=now,
+            session, user.id, config.search.policy, job, score, channel, now=now,
             exclude_application_id=application.id,
         )  # fmt: skip
         notes = decision.reasons
-        if decision.allowed and not warnings:
-            application.status = AppStatus.approved.value
-            application.auto = True
-            application.approved_at = now
-        else:
-            application.status = AppStatus.needs_review.value
+        auto = decision.allowed and not warnings
+        status = AppStatus.approved.value if auto else AppStatus.needs_review.value
     blockers.extend(warnings)
+
+    # The one write. It carries the version read at the top.
+    application.channel = channel
+    application.error = ""
+    application.resume_variant_id = variant.id
+    application.status = status
+    application.auto = auto
+    if auto:
+        application.approved_at = now
     application.blockers = blockers
-    application.prepared = {**application.prepared, "auto_notes": notes}
-    add_event(
-        application, "prepared", status=application.status, blockers=[b["kind"] for b in blockers]
-    )
+    application.prepared = {**prepared, "auto_notes": notes}
+    add_event(application, "prepared", status=status, blockers=[b["kind"] for b in blockers])
     session.flush()
     return application
 
@@ -449,18 +466,18 @@ def _sender_warnings(job: Job, channel: str) -> list[dict[str, str]]:
 
 
 def _save_draft_instead(
-    settings: Settings, config: UserConfig, application: Application
-) -> dict[str, str]:
+    settings: Settings, config: UserConfig, application_id: int, prepared: dict[str, Any]
+) -> tuple[dict[str, str], dict[str, Any]]:
     """No mail server configured: leave an .eml draft to send by hand."""
     detail = "Outgoing mail is not configured (JOBPORTAL_SMTP_HOST), so the app cannot send this."
     try:
-        message = build_message(_outgoing(settings, config, application.prepared, bcc=False))
-        path = save_draft(message, settings.outbox_dir, f"application-{application.id}")
-        application.prepared = {**application.prepared, "draft_file": str(path)}
+        message = build_message(_outgoing(settings, config, prepared, bcc=False))
+        path = save_draft(message, settings.outbox_dir, f"application-{application_id}")
+        prepared = {**prepared, "draft_file": str(path)}
         detail += f" A draft was saved to {path}: open it in your mail client and send it."
     except MailError as exc:
         detail += f" No draft could be saved either: {exc}"
-    return {"kind": "no_smtp", "detail": detail}
+    return {"kind": "no_smtp", "detail": detail}, prepared
 
 
 def _outgoing(
@@ -877,10 +894,11 @@ def _claim(session: Session, application: Application, *, channel: str) -> bool:
     The state is committed *before* anything leaves, so a crash can never
     lead to a second send either: an interrupted one is surfaced, not retried.
     """
-    application.status = AppStatus.submitting.value
-    application.attempts += 1
-    add_event(application, "sending", channel=channel, auto=application.auto)
     try:
+        application.status = AppStatus.submitting.value
+        application.attempts += 1
+        # Loading the event list may already flush, so this is inside the try too.
+        add_event(application, "sending", channel=channel, auto=application.auto)
         session.commit()
     except StaleDataError:
         session.rollback()

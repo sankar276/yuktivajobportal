@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Apply</title></head>
+<body><p>Taking you to the application.</p>
+<script>
+  // Stands in for a board page that sends the browser to another site.
+  const to = new URLSearchParams(location.search).get("to");
+  if (to) location.replace(to);
+</script>
+</body></html>
